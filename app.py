@@ -44,6 +44,10 @@ def login_required(f):
         return f(*args, **kwargs)
     return decorated
 
+@app.route("/health")
+def health():
+    return "ok", 200
+
 @app.route("/login", methods=["GET", "POST"])
 def login_page():
     error = ""
@@ -237,9 +241,12 @@ def scheduled_generate():
     except Exception as e:
         print(f"[scheduler] Generation failed: {e}")
 
-scheduler = BackgroundScheduler(timezone="America/New_York")
-scheduler.add_job(scheduled_generate, "cron", day_of_week="mon-fri", hour=6, minute=0)
-scheduler.start()
+try:
+    scheduler = BackgroundScheduler(timezone="America/New_York")
+    scheduler.add_job(scheduled_generate, "cron", day_of_week="mon-fri", hour=6, minute=0)
+    scheduler.start()
+except Exception as e:
+    print(f"[scheduler] Failed to start: {e}")
 
 # ── Login page HTML ────────────────────────────────────────────────────────────
 LOGIN_HTML = r"""<!DOCTYPE html>

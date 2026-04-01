@@ -1,5 +1,5 @@
 """
-Macro Briefing — cloud web app.
+AI Macro Trader — cloud web app.
 Deploy on Railway. Accessible from any device, anywhere.
 """
 
@@ -7,6 +7,7 @@ import json
 import os
 import re
 import uuid
+import hashlib
 import queue
 import threading
 from datetime import date, datetime
@@ -32,12 +33,36 @@ BRIEFINGS_DIR  = DATA_DIR / "briefings"
 FEEDBACK_FILE  = DATA_DIR / "feedback.json"
 PAUSE_FILE     = DATA_DIR / ".paused"
 KNOWLEDGE_DIR  = DATA_DIR / "knowledge"
+USERS_FILE     = DATA_DIR / "users.json"
+INVITES_FILE   = DATA_DIR / "invites.json"
 DATA_DIR.mkdir(exist_ok=True)
 BRIEFINGS_DIR.mkdir(exist_ok=True)
 KNOWLEDGE_DIR.mkdir(exist_ok=True)
 
 # ── Auth ───────────────────────────────────────────────────────────────────────
-APP_PASSWORD = os.environ.get("APP_PASSWORD", "changeme")
+ADMIN_PASSWORD = os.environ.get("APP_PASSWORD", "changeme")
+ADMIN_USERNAME = "arjun"
+
+def hash_password(pw: str) -> str:
+    return hashlib.sha256(pw.encode()).hexdigest()
+
+def load_users() -> dict:
+    if not USERS_FILE.exists():
+        return {}
+    with open(USERS_FILE) as f:
+        return json.load(f)
+
+def save_users(data: dict):
+    USERS_FILE.write_text(json.dumps(data, indent=2))
+
+def load_invites() -> dict:
+    if not INVITES_FILE.exists():
+        return {}
+    with open(INVITES_FILE) as f:
+        return json.load(f)
+
+def save_invites(data: dict):
+    INVITES_FILE.write_text(json.dumps(data, indent=2))
 
 def login_required(f):
     @wraps(f)
@@ -49,6 +74,19 @@ def login_required(f):
         return f(*args, **kwargs)
     return decorated
 
+def admin_required(f):
+    """Decorator — only Arjun (admin) can access this route."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not session.get("logged_in"):
+            if request.path.startswith("/api/"):
+                return jsonify({"error": "Unauthorized"}), 401
+            return redirect(url_for("login_page"))
+        if not session.get("is_admin"):
+            return jsonify({"error": "Admin only"}), 403
+        return f(*args, **kwargs)
+    return decorated
+
 @app.route("/health")
 def health():
     return "ok", 200
@@ -57,17 +95,148 @@ def health():
 def login_page():
     error = ""
     if request.method == "POST":
+        username = request.form.get("username", "").strip().lower()
         pw = request.form.get("password", "")
-        if pw == APP_PASSWORD:
+        # Admin login
+        if username == ADMIN_USERNAME and pw == ADMIN_PASSWORD:
             session["logged_in"] = True
+            session["username"] = ADMIN_USERNAME
+            session["is_admin"] = True
             return redirect(url_for("index"))
-        error = "Incorrect password."
+        # Regular user login
+        users = load_users()
+        if username in users:
+            stored = users[username]
+            if stored.get("password_hash") == hash_password(pw) and stored.get("active", True):
+                session["logged_in"] = True
+                session["username"] = username
+                session["is_admin"] = False
+                return redirect(url_for("index"))
+        error = "Incorrect username or password."
     return render_template_string(LOGIN_HTML, error=error)
+
+@app.route("/register", methods=["GET", "POST"])
+def register_page():
+    error = ""
+    success = ""
+    token = request.args.get("token", "") or request.form.get("token", "")
+    if request.method == "POST":
+        invites = load_invites()
+        token = request.form.get("token", "").strip()
+        username = request.form.get("username", "").strip().lower()
+        pw = request.form.get("password", "")
+        pw2 = request.form.get("password2", "")
+        # Validate token
+        if token not in invites:
+            error = "Invalid or expired invite token."
+        elif invites[token].get("used"):
+            error = "This invite has already been used."
+        elif not re.match(r"^[a-z0-9_]{3,20}$", username):
+            error = "Username must be 3-20 characters: letters, numbers, underscore only."
+        elif username == ADMIN_USERNAME:
+            error = "That username is reserved."
+        elif pw != pw2:
+            error = "Passwords do not match."
+        elif len(pw) < 8:
+            error = "Password must be at least 8 characters."
+        else:
+            users = load_users()
+            if username in users:
+                error = "Username already taken."
+            else:
+                users[username] = {
+                    "password_hash": hash_password(pw),
+                    "created_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    "active": True,
+                    "invited_by": invites[token].get("created_by", "arjun"),
+                    "note": invites[token].get("note", ""),
+                }
+                save_users(users)
+                invites[token]["used"] = True
+                invites[token]["used_by"] = username
+                invites[token]["used_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+                save_invites(invites)
+                success = f"Account created! You can now sign in as {username}."
+    return render_template_string(REGISTER_HTML, error=error, success=success, token=token)
 
 @app.route("/logout")
 def logout():
     session.clear()
     return redirect(url_for("login_page"))
+
+# ── User management API (admin only) ──────────────────────────────────────────
+@app.route("/api/admin/invite", methods=["POST"])
+@admin_required
+def api_create_invite():
+    note = (request.json or {}).get("note", "")
+    token = str(uuid.uuid4())[:12]
+    invites = load_invites()
+    invites[token] = {
+        "token": token,
+        "note": str(note)[:100],
+        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "created_by": ADMIN_USERNAME,
+        "used": False,
+    }
+    save_invites(invites)
+    base_url = request.host_url.rstrip("/")
+    return jsonify({"ok": True, "token": token,
+                    "link": f"{base_url}/register?token={token}"})
+
+@app.route("/api/admin/invites", methods=["GET"])
+@admin_required
+def api_list_invites():
+    invites = load_invites()
+    return jsonify(list(invites.values()))
+
+@app.route("/api/admin/invite/<token>/delete", methods=["POST"])
+@admin_required
+def api_delete_invite(token):
+    invites = load_invites()
+    invites.pop(token, None)
+    save_invites(invites)
+    return jsonify({"ok": True})
+
+@app.route("/api/admin/users", methods=["GET"])
+@admin_required
+def api_list_users():
+    users = load_users()
+    return jsonify([
+        {"username": u, "created_at": d.get("created_at",""),
+         "active": d.get("active", True), "note": d.get("note","")}
+        for u, d in users.items()
+    ])
+
+@app.route("/api/admin/users/<username>/toggle", methods=["POST"])
+@admin_required
+def api_toggle_user(username):
+    if username == ADMIN_USERNAME:
+        return jsonify({"error": "Cannot disable admin"}), 400
+    users = load_users()
+    if username not in users:
+        return jsonify({"error": "Not found"}), 404
+    users[username]["active"] = not users[username].get("active", True)
+    save_users(users)
+    return jsonify({"ok": True, "active": users[username]["active"]})
+
+@app.route("/api/admin/users/<username>/delete", methods=["POST"])
+@admin_required
+def api_delete_user(username):
+    if username == ADMIN_USERNAME:
+        return jsonify({"error": "Cannot delete admin"}), 400
+    users = load_users()
+    users.pop(username, None)
+    save_users(users)
+    return jsonify({"ok": True})
+
+# ── Session info ───────────────────────────────────────────────────────────────
+@app.route("/api/me")
+@login_required
+def api_me():
+    return jsonify({
+        "username": session.get("username", ""),
+        "is_admin": session.get("is_admin", False),
+    })
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 def get_status():
@@ -134,7 +303,6 @@ def api_generate():
                 return
 
             if kind == "chunk":
-                # Buffer and flush line by line so SSE frames stay clean
                 buffer += payload
                 while "\n" in buffer:
                     line, buffer = buffer.split("\n", 1)
@@ -188,14 +356,14 @@ def api_delete_today():
     return jsonify({"ok": True})
 
 @app.route("/api/pause", methods=["POST"])
-@login_required
+@admin_required
 def api_pause():
     reason = (request.json or {}).get("reason", f"Paused {datetime.now().strftime('%Y-%m-%d %H:%M')}")
     PAUSE_FILE.write_text(reason)
     return jsonify({"ok": True})
 
 @app.route("/api/resume", methods=["POST"])
-@login_required
+@admin_required
 def api_resume():
     if PAUSE_FILE.exists():
         PAUSE_FILE.unlink()
@@ -231,19 +399,13 @@ def api_save_feedback():
             entry["trade"] = str(e.get("trade", ""))[:500]
         entries.append(entry)
     data = load_feedback()
-    # Merge: keep section feedback and trade feedback together under same date key
     existing = data.get(date_key, [])
-    # Separate new entries by type
     new_sections = {e["section"]: e for e in entries if e.get("section")}
     new_trades = [e for e in entries if not e.get("section")]
-    # Keep existing entries that aren't being replaced
     kept = [e for e in existing if e.get("section") and e["section"] not in new_sections]
-    # If new_trades provided, replace all old trade entries
     if new_trades:
-        kept = [e for e in kept]  # keep section entries
         data[date_key] = kept + list(new_sections.values()) + new_trades
     else:
-        # Only updating section feedback — merge with existing trade entries
         existing_trades = [e for e in existing if not e.get("section")]
         data[date_key] = kept + list(new_sections.values()) + existing_trades
     save_feedback_data(data)
@@ -253,14 +415,13 @@ def api_save_feedback():
 ALLOWED_EXTENSIONS = {".pdf", ".docx", ".txt"}
 
 def extract_text_from_file(filepath: Path) -> str:
-    """Extract plain text from PDF, DOCX, or TXT file."""
     suffix = filepath.suffix.lower()
     try:
         if suffix == ".pdf":
             import pdfplumber
             pages = []
             with pdfplumber.open(filepath) as pdf:
-                for page in pdf.pages[:25]:  # max 25 pages
+                for page in pdf.pages[:25]:
                     text = page.extract_text()
                     if text:
                         pages.append(text)
@@ -269,14 +430,12 @@ def extract_text_from_file(filepath: Path) -> str:
             from docx import Document
             doc = Document(filepath)
             return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
-        else:  # .txt
+        else:
             return filepath.read_text(errors="replace")[:60000]
     except Exception as e:
         return f"[Text extraction error: {e}]"
 
 def summarize_document(title: str, raw_text: str) -> str:
-    """Use Claude Haiku (cheap/fast) to produce a focused knowledge note from document text.
-    This runs ONCE at upload time — the result is stored and reused forever."""
     from anthropic import Anthropic
     haiku_client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
     resp = haiku_client.messages.create(
@@ -301,7 +460,6 @@ def summarize_document(title: str, raw_text: str) -> str:
     return resp.content[0].text
 
 def list_documents() -> list:
-    """Return all knowledge base documents as a list of dicts (no summary text)."""
     docs = []
     for f in sorted(KNOWLEDGE_DIR.glob("*.json"), reverse=True):
         try:
@@ -319,31 +477,26 @@ def list_documents() -> list:
     return docs
 
 @app.route("/api/upload", methods=["POST"])
-@login_required
+@admin_required
 def api_upload():
     if "file" not in request.files:
         return jsonify({"error": "No file provided"}), 400
     f = request.files["file"]
     if not f.filename:
         return jsonify({"error": "No filename"}), 400
-
     suffix = Path(f.filename).suffix.lower()
     if suffix not in ALLOWED_EXTENSIONS:
         return jsonify({"error": f"File type {suffix} not allowed. Use .pdf, .docx, or .txt"}), 400
-
     safe_name = secure_filename(f.filename)
     doc_id = str(uuid.uuid4())[:8]
-    # Store raw file temporarily for extraction
     tmp_path = DATA_DIR / f"tmp_{doc_id}{suffix}"
     try:
         f.save(str(tmp_path))
         raw_text = extract_text_from_file(tmp_path)
         if not raw_text.strip():
             return jsonify({"error": "Could not extract text from file"}), 422
-
         title = Path(f.filename).stem.replace("_", " ").replace("-", " ")
         summary = summarize_document(title, raw_text)
-
         doc_record = {
             "id": doc_id,
             "title": title,
@@ -354,13 +507,9 @@ def api_upload():
         }
         kb_file = KNOWLEDGE_DIR / f"{doc_id}.json"
         kb_file.write_text(json.dumps(doc_record, indent=2))
-
         return jsonify({"ok": True, "doc": {
-            "id": doc_id,
-            "title": title,
-            "filename": safe_name,
-            "uploaded_at": doc_record["uploaded_at"],
-            "active": True,
+            "id": doc_id, "title": title, "filename": safe_name,
+            "uploaded_at": doc_record["uploaded_at"], "active": True,
         }})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -374,7 +523,7 @@ def api_list_documents():
     return jsonify(list_documents())
 
 @app.route("/api/documents/<doc_id>/toggle", methods=["POST"])
-@login_required
+@admin_required
 def api_toggle_document(doc_id):
     if not re.match(r"^[a-f0-9]{8}$", doc_id):
         return jsonify({"error": "Invalid id"}), 400
@@ -388,7 +537,7 @@ def api_toggle_document(doc_id):
     return jsonify({"ok": True, "active": doc["active"]})
 
 @app.route("/api/documents/<doc_id>/delete", methods=["POST"])
-@login_required
+@admin_required
 def api_delete_document(doc_id):
     if not re.match(r"^[a-f0-9]{8}$", doc_id):
         return jsonify({"error": "Invalid id"}), 400
@@ -425,32 +574,92 @@ LOGIN_HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Macro Briefing — Login</title>
+<title>AI Macro Trader — Sign In</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { background: #0d0d0d; color: #e8e8e8; font-family: -apple-system, sans-serif;
          display: flex; align-items: center; justify-content: center; min-height: 100vh; }
   .box { background: #161616; border: 1px solid #2a2a2a; border-radius: 12px;
          padding: 40px 36px; width: 100%; max-width: 360px; }
-  h1 { font-size: 20px; color: #c8a96e; margin-bottom: 6px; }
-  p  { font-size: 13px; color: #666; margin-bottom: 28px; }
-  input[type=password] { width: 100%; background: #0d0d0d; border: 1px solid #2a2a2a;
-    border-radius: 8px; padding: 12px 14px; color: #e8e8e8; font-size: 15px; margin-bottom: 14px; }
-  input[type=password]:focus { outline: none; border-color: #c8a96e; }
+  .brand { font-size: 22px; font-weight: 700; color: #c8a96e; margin-bottom: 4px; letter-spacing: -0.02em; }
+  .sub   { font-size: 13px; color: #555; margin-bottom: 28px; }
+  label  { display: block; font-size: 12px; color: #666; margin-bottom: 5px; }
+  input  { width: 100%; background: #0d0d0d; border: 1px solid #2a2a2a;
+           border-radius: 8px; padding: 11px 14px; color: #e8e8e8; font-size: 15px;
+           margin-bottom: 12px; }
+  input:focus { outline: none; border-color: #c8a96e; }
   button { width: 100%; background: #c8a96e; color: #000; border: none; border-radius: 8px;
-           padding: 12px; font-size: 15px; font-weight: 600; cursor: pointer; }
+           padding: 12px; font-size: 15px; font-weight: 600; cursor: pointer; margin-top: 2px; }
   .error { color: #e05252; font-size: 13px; margin-top: 12px; }
+  .reg-link { text-align: center; margin-top: 18px; font-size: 12px; color: #444; }
+  .reg-link a { color: #c8a96e; text-decoration: none; }
 </style>
 </head>
 <body>
 <div class="box">
-  <h1>Macro Briefing</h1>
-  <p>Arjun Parikh // QIS</p>
+  <div class="brand">AI Macro Trader</div>
+  <div class="sub">Rates · FX · Cross-Currency Basis</div>
   <form method="post">
-    <input type="password" name="password" placeholder="Password" autofocus>
+    <label>Username</label>
+    <input type="text" name="username" placeholder="username" autocomplete="username" autofocus>
+    <label>Password</label>
+    <input type="password" name="password" placeholder="Password" autocomplete="current-password">
     <button type="submit">Sign in</button>
     {% if error %}<div class="error">{{ error }}</div>{% endif %}
   </form>
+  <div class="reg-link">Have an invite? <a href="/register">Create account</a></div>
+</div>
+</body>
+</html>"""
+
+# ── Register page HTML ─────────────────────────────────────────────────────────
+REGISTER_HTML = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Macro Trader — Create Account</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0d0d0d; color: #e8e8e8; font-family: -apple-system, sans-serif;
+         display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+  .box { background: #161616; border: 1px solid #2a2a2a; border-radius: 12px;
+         padding: 40px 36px; width: 100%; max-width: 380px; }
+  .brand { font-size: 22px; font-weight: 700; color: #c8a96e; margin-bottom: 4px; letter-spacing: -0.02em; }
+  .sub   { font-size: 13px; color: #555; margin-bottom: 24px; }
+  label  { display: block; font-size: 12px; color: #666; margin-bottom: 5px; }
+  input  { width: 100%; background: #0d0d0d; border: 1px solid #2a2a2a;
+           border-radius: 8px; padding: 11px 14px; color: #e8e8e8; font-size: 15px;
+           margin-bottom: 12px; }
+  input:focus { outline: none; border-color: #c8a96e; }
+  button { width: 100%; background: #c8a96e; color: #000; border: none; border-radius: 8px;
+           padding: 12px; font-size: 15px; font-weight: 600; cursor: pointer; margin-top: 2px; }
+  .error   { color: #e05252; font-size: 13px; margin-top: 12px; }
+  .success { color: #4caf6e; font-size: 13px; margin-top: 12px; }
+  .note    { font-size: 12px; color: #555; margin-bottom: 18px; line-height: 1.5; }
+  .back    { text-align: center; margin-top: 18px; font-size: 12px; color: #444; }
+  .back a  { color: #c8a96e; text-decoration: none; }
+</style>
+</head>
+<body>
+<div class="box">
+  <div class="brand">AI Macro Trader</div>
+  <div class="sub">Create your account</div>
+  <p class="note">You need an invite token from Arjun to register.</p>
+  <form method="post">
+    <label>Invite Token</label>
+    <input type="text" name="token" placeholder="e.g. a1b2c3d4e5f6" value="{{ token }}" autocomplete="off">
+    <label>Choose a Username</label>
+    <input type="text" name="username" placeholder="lowercase, no spaces" autocomplete="username">
+    <label>Password</label>
+    <input type="password" name="password" placeholder="At least 8 characters" autocomplete="new-password">
+    <label>Confirm Password</label>
+    <input type="password" name="password2" placeholder="Repeat password" autocomplete="new-password">
+    <button type="submit">Create Account</button>
+    {% if error %}<div class="error">{{ error }}</div>{% endif %}
+    {% if success %}<div class="success">{{ success }} <a href="/login" style="color:#c8a96e">Sign in →</a></div>{% endif %}
+  </form>
+  <div class="back"><a href="/login">← Back to sign in</a></div>
 </div>
 </body>
 </html>"""
@@ -461,7 +670,7 @@ HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Macro Briefing</title>
+<title>AI Macro Trader</title>
 <style>
   :root {
     --bg: #0d0d0d; --surface: #161616; --border: #2a2a2a;
@@ -476,9 +685,10 @@ HTML = r"""<!DOCTYPE html>
   header { padding: 16px 20px; border-bottom: 1px solid var(--border);
            display: flex; align-items: center; justify-content: space-between;
            background: var(--surface); position: sticky; top: 0; z-index: 10; }
-  .logo { font-size: 17px; font-weight: 600; letter-spacing: 0.02em; color: var(--accent); }
-  .logo span { color: var(--muted); font-weight: 400; }
+  .logo { font-size: 17px; font-weight: 700; letter-spacing: -0.01em; color: var(--accent); }
+  .logo span { color: var(--muted); font-weight: 400; font-size: 13px; margin-left: 6px; }
   .header-right { display: flex; gap: 10px; align-items: center; }
+  .header-user { font-size: 12px; color: var(--muted); }
   main { flex: 1; padding: 20px; max-width: 900px; width: 100%; margin: 0 auto; }
 
   .btn { display: inline-flex; align-items: center; justify-content: center; gap: 7px;
@@ -488,6 +698,7 @@ HTML = r"""<!DOCTYPE html>
   .btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
   .btn-primary { background: var(--accent); color: #000; }
   .btn-secondary { background: var(--surface); color: var(--text); border: 1px solid var(--border); }
+  .btn-danger { background: rgba(224,82,82,0.15); color: var(--red); border: 1px solid rgba(224,82,82,0.3); }
   .btn-sm { padding: 7px 13px; font-size: 13px; }
   .btn-large { padding: 14px 28px; font-size: 16px; font-weight: 600; width: 100%; }
 
@@ -597,6 +808,35 @@ HTML = r"""<!DOCTYPE html>
   .upload-status { font-size: 12px; color: var(--muted); margin-top: 8px; min-height: 18px; }
   .upload-status.ok  { color: var(--green); }
   .upload-status.err { color: var(--red); }
+
+  /* Users / Invites */
+  .user-item { display: flex; align-items: center; gap: 10px; padding: 10px 0;
+               border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+  .user-item:last-child { border-bottom: none; }
+  .user-name { font-size: 13px; font-weight: 500; flex: 1; }
+  .user-date { font-size: 11px; color: var(--muted); }
+  .user-note { font-size: 11px; color: var(--muted); font-style: italic; }
+  .invite-item { display: flex; align-items: center; gap: 10px; padding: 10px 0;
+                 border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+  .invite-item:last-child { border-bottom: none; }
+  .invite-token { font-family: "SF Mono", monospace; font-size: 12px; color: var(--accent);
+                  flex: 1; word-break: break-all; }
+  .invite-meta { font-size: 11px; color: var(--muted); }
+  .invite-link { font-size: 11px; color: var(--muted); word-break: break-all; }
+  .copy-btn { background: none; border: 1px solid var(--border); border-radius: 5px;
+              padding: 3px 9px; cursor: pointer; font-size: 11px; color: var(--muted);
+              transition: all 0.15s; white-space: nowrap; }
+  .copy-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .copy-btn.copied { border-color: var(--green); color: var(--green); }
+  .invite-note-input { background: #0d0d0d; border: 1px solid var(--border); border-radius: 6px;
+                       padding: 7px 10px; color: var(--text); font-size: 13px; font-family: inherit;
+                       flex: 1; min-width: 140px; }
+  .invite-note-input:focus { outline: none; border-color: var(--accent); }
+  .status-msg { font-size: 12px; margin-top: 8px; min-height: 18px; }
+  .status-msg.ok  { color: var(--green); }
+  .status-msg.err { color: var(--red); }
+
+  /* Storage steps */
   .storage-steps { font-size: 12px; color: var(--muted); line-height: 2;
                    background: #0a0a0a; border: 1px solid var(--border); border-radius: 7px;
                    padding: 12px 14px; margin-top: 10px; }
@@ -639,13 +879,15 @@ HTML = r"""<!DOCTYPE html>
              border-top-color: var(--accent); border-radius: 50%;
              animation: spin 0.7s linear infinite; display: inline-block; }
   @keyframes spin { to { transform: rotate(360deg); } }
+  .admin-only { display: none; }
+  .admin-only.visible { display: block; }
 </style>
 </head>
 <body>
 <div class="app">
 
 <header>
-  <div class="logo">Macro Briefing <span>// Arjun Parikh</span></div>
+  <div class="logo">AI Macro Trader <span id="header-user"></span></div>
   <div class="header-right desktop-nav">
     <button class="btn btn-secondary btn-sm" onclick="showSection('history')">History</button>
     <button class="btn btn-secondary btn-sm" onclick="showSection('settings')">Settings</button>
@@ -706,7 +948,9 @@ HTML = r"""<!DOCTYPE html>
 
   <!-- SETTINGS -->
   <div id="sec-settings" class="section">
-    <div class="card">
+
+    <!-- Schedule (admin only) -->
+    <div class="card admin-only" id="card-schedule">
       <div class="card-title">Schedule</div>
       <div class="row" id="schedule-row" style="margin-bottom:14px"><div class="spinner"></div></div>
       <div class="row" style="gap:10px">
@@ -715,11 +959,12 @@ HTML = r"""<!DOCTYPE html>
       </div>
     </div>
 
-    <div class="card">
+    <!-- Knowledge Base (admin only) -->
+    <div class="card admin-only" id="card-kb">
       <div class="card-title">Knowledge Base</div>
       <p style="font-size:12px;color:var(--muted);line-height:1.6;margin-bottom:14px">
         Upload research documents (.pdf, .docx, .txt). Each is summarized <em>once</em> using a lightweight AI call,
-        then those notes are injected into every future briefing. Toggle off to exclude from prompts without deleting.
+        then those notes are injected into every future briefing. Toggle off to exclude without deleting.
       </p>
       <div id="doc-list"><div class="empty" style="padding:12px 0">No documents uploaded yet.</div></div>
       <div class="upload-area">
@@ -731,11 +976,40 @@ HTML = r"""<!DOCTYPE html>
       </div>
     </div>
 
-    <div class="card">
+    <!-- User Management (admin only) -->
+    <div class="card admin-only" id="card-users">
+      <div class="card-title">User Access</div>
+      <p style="font-size:12px;color:var(--muted);line-height:1.6;margin-bottom:14px">
+        Generate single-use invite links to grant access. Users create their own account with the link.
+        You can disable or remove accounts at any time.
+      </p>
+
+      <div style="margin-bottom:20px">
+        <div style="font-size:11px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:var(--muted);margin-bottom:10px">Create Invite</div>
+        <div class="row" style="gap:8px">
+          <input type="text" class="invite-note-input" id="invite-note" placeholder="Note (e.g. John Smith, Goldman)">
+          <button class="btn btn-primary btn-sm" onclick="createInvite()">Generate Link</button>
+        </div>
+        <div class="status-msg" id="invite-status"></div>
+      </div>
+
+      <div style="margin-bottom:20px">
+        <div style="font-size:11px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:var(--muted);margin-bottom:10px">Pending Invites</div>
+        <div id="invites-list"><div class="empty" style="padding:8px 0">No pending invites.</div></div>
+      </div>
+
+      <div>
+        <div style="font-size:11px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:var(--muted);margin-bottom:10px">Active Users</div>
+        <div id="users-list"><div class="empty" style="padding:8px 0">No users yet.</div></div>
+      </div>
+    </div>
+
+    <!-- Storage (admin only) -->
+    <div class="card admin-only" id="card-storage">
       <div class="card-title">Persistent Storage (Railway Volume)</div>
       <p style="font-size:12px;color:var(--muted);line-height:1.6;margin-bottom:10px">
-        By default, Railway resets the <code style="background:#1a1a1a;padding:1px 5px;border-radius:4px;font-family:monospace;font-size:11px;color:var(--accent)">data/</code> folder on every code deploy —
-        wiping uploaded documents, briefings, and feedback. Set up a Volume once to make everything permanent:
+        By default, Railway resets the <code style="background:#1a1a1a;padding:1px 5px;border-radius:4px;font-family:monospace;font-size:11px;color:var(--accent)">data/</code> folder on every code deploy.
+        Set up a Volume once to make everything permanent:
       </p>
       <div class="storage-steps">
         <strong>One-time setup:</strong><br>
@@ -743,17 +1017,20 @@ HTML = r"""<!DOCTYPE html>
         2. Click your service → <strong>Volumes</strong> tab → <strong>Add Volume</strong><br>
         3. Set mount path: <code>/app/data</code><br>
         4. Click <strong>Deploy</strong><br><br>
-        After this, all uploads, briefings &amp; feedback survive code deploys forever.
+        After this, all uploads, briefings, users &amp; feedback survive code deploys forever.
       </div>
     </div>
 
+    <!-- About (everyone) -->
     <div class="card">
       <div class="card-title">About</div>
       <p style="font-size:13px;color:var(--muted);line-height:1.6">
-        Briefings auto-generate at <strong style="color:var(--text)">6 AM ET Mon–Fri</strong> using the Anthropic API + live web search.<br><br>
-        Two learning systems run in parallel: your feedback (section + trade ratings) and your uploaded documents are both injected into every briefing prompt. Documents are summarized once at upload — no repeated API cost.
+        <strong style="color:var(--text)">AI Macro Trader</strong> — Daily briefings covering rates, FX, and cross-currency basis.<br><br>
+        Briefings auto-generate at <strong style="color:var(--text)">6 AM ET Mon–Fri</strong> using the Anthropic API + live web search.
+        Two learning systems run in parallel: section/trade feedback and uploaded knowledge base documents are both injected into every prompt.
       </p>
     </div>
+
   </div>
 
 </main>
@@ -780,6 +1057,21 @@ HTML = r"""<!DOCTYPE html>
 let currentSection = 'home';
 let currentBriefingFile = null;
 let statusData = null;
+let isAdmin = false;
+
+async function initApp() {
+  const r = await fetch('/api/me');
+  if (r.ok) {
+    const me = await r.json();
+    isAdmin = me.is_admin;
+    const el = document.getElementById('header-user');
+    if (el) el.textContent = me.username ? `// ${me.username}` : '';
+    if (isAdmin) {
+      document.querySelectorAll('.admin-only').forEach(el => el.classList.add('visible'));
+    }
+  }
+  loadStatus();
+}
 
 function showSection(name) {
   document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
@@ -879,15 +1171,12 @@ async function loadBriefing(filename) {
   if (!briefingResp.ok) return;
   const data = await briefingResp.json();
   const allFeedback = feedbackResp.ok ? await feedbackResp.json() : [];
-
-  // Build section ratings map: { "Section Title": {rating, note} }
   const sectionRatings = {};
   for (const entry of allFeedback) {
     if (entry.section) {
       sectionRatings[entry.section] = { rating: entry.rating, note: entry.note || '' };
     }
   }
-
   const dateStr = filename.replace('macro-briefing-', '').replace('.md', '');
   document.getElementById('briefing-card-title').textContent = `Briefing — ${dateStr}`;
   document.getElementById('briefing-content').innerHTML = renderMarkdown(data.content, sectionRatings);
@@ -897,7 +1186,6 @@ async function loadBriefing(filename) {
 
 function renderMarkdown(md, sectionRatings) {
   sectionRatings = sectionRatings || {};
-  // Escape HTML first
   let html = md
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/^# (.+)$/gm, '<h1>$1</h1>')
@@ -950,17 +1238,34 @@ async function loadSettings() {
   const r = await fetch('/api/status');
   const s = await r.json();
   const schedRow = document.getElementById('schedule-row');
-  schedRow.innerHTML = s.paused
-    ? `<span class="pill pill-red"><span class="dot"></span>Paused</span>`
-    : `<span class="pill pill-green"><span class="dot"></span>Active — Mon-Fri 6 AM ET</span>`;
-  await loadDocuments();
+  if (schedRow) {
+    schedRow.innerHTML = s.paused
+      ? `<span class="pill pill-red"><span class="dot"></span>Paused</span>`
+      : `<span class="pill pill-green"><span class="dot"></span>Active — Mon-Fri 6 AM ET</span>`;
+  }
+  if (isAdmin) {
+    await loadDocuments();
+    await loadUsersAndInvites();
+  }
 }
 
+async function pauseBriefings() {
+  await fetch('/api/pause', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' });
+  loadStatus(); loadSettings();
+}
+
+async function resumeBriefings() {
+  await fetch('/api/resume', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' });
+  loadStatus(); loadSettings();
+}
+
+// ── Document upload ──
 async function loadDocuments() {
   const r = await fetch('/api/documents');
   if (!r.ok) return;
   const docs = await r.json();
   const list = document.getElementById('doc-list');
+  if (!list) return;
   if (!docs.length) {
     list.innerHTML = '<div class="empty" style="padding:12px 0">No documents uploaded yet.</div>';
     return;
@@ -983,7 +1288,7 @@ async function uploadDocument(input) {
   const status = document.getElementById('upload-status');
   const btn = document.getElementById('upload-btn');
   status.className = 'upload-status';
-  status.textContent = 'Uploading and processing... (takes ~10 seconds)';
+  status.textContent = 'Uploading and processing... (~10 seconds)';
   btn.disabled = true;
   input.value = '';
   const formData = new FormData();
@@ -993,7 +1298,7 @@ async function uploadDocument(input) {
     const data = await r.json();
     if (r.ok && data.ok) {
       status.className = 'upload-status ok';
-      status.textContent = `Processed: "${data.doc.title}" — now injected into all future briefings`;
+      status.textContent = `Processed: "${data.doc.title}" — injected into all future briefings`;
       await loadDocuments();
     } else {
       status.className = 'upload-status err';
@@ -1018,24 +1323,117 @@ async function toggleDocument(docId, btn) {
 async function deleteDocument(docId) {
   if (!confirm('Remove this document from the knowledge base?')) return;
   const r = await fetch(`/api/documents/${docId}/delete`, { method: 'POST' });
+  if (r.ok) { await loadDocuments(); }
+}
+
+// ── User management ──
+async function loadUsersAndInvites() {
+  await Promise.all([loadInvites(), loadUsers()]);
+}
+
+async function loadInvites() {
+  const r = await fetch('/api/admin/invites');
+  if (!r.ok) return;
+  const invites = await r.json();
+  const list = document.getElementById('invites-list');
+  if (!list) return;
+  const pending = invites.filter(i => !i.used);
+  if (!pending.length) {
+    list.innerHTML = '<div class="empty" style="padding:8px 0">No pending invites.</div>';
+    return;
+  }
+  list.innerHTML = pending.map(inv => `
+    <div class="invite-item" id="inv-${inv.token}">
+      <div style="flex:1;min-width:0">
+        <div class="invite-token">${inv.token}</div>
+        <div class="invite-meta">${inv.note ? inv.note + ' · ' : ''}Created ${inv.created_at}</div>
+        <div class="invite-link" id="inv-link-${inv.token}">${window.location.origin}/register?token=${inv.token}</div>
+      </div>
+      <div style="display:flex;gap:6px;flex-shrink:0">
+        <button class="copy-btn" id="copy-${inv.token}" onclick="copyInviteLink('${inv.token}')">Copy</button>
+        <button class="doc-delete" onclick="deleteInvite('${inv.token}')">✕</button>
+      </div>
+    </div>`).join('');
+}
+
+async function loadUsers() {
+  const r = await fetch('/api/admin/users');
+  if (!r.ok) return;
+  const users = await r.json();
+  const list = document.getElementById('users-list');
+  if (!list) return;
+  if (!users.length) {
+    list.innerHTML = '<div class="empty" style="padding:8px 0">No users yet.</div>';
+    return;
+  }
+  list.innerHTML = users.map(u => `
+    <div class="user-item" id="user-${u.username}">
+      <div style="flex:1">
+        <span class="user-name">${u.username}</span>
+        ${u.note ? `<span class="user-note"> — ${u.note}</span>` : ''}
+        <div class="user-date">Joined ${u.created_at}</div>
+      </div>
+      <div style="display:flex;gap:6px;align-items:center">
+        <button class="toggle-pill ${u.active ? 'active' : 'inactive'}"
+          onclick="toggleUser('${u.username}', this)">${u.active ? 'Active' : 'Disabled'}</button>
+        <button class="doc-delete" onclick="deleteUser('${u.username}')">✕</button>
+      </div>
+    </div>`).join('');
+}
+
+async function createInvite() {
+  const note = document.getElementById('invite-note').value.trim();
+  const status = document.getElementById('invite-status');
+  const r = await fetch('/api/admin/invite', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ note })
+  });
   if (r.ok) {
-    const el = document.getElementById(`doc-${docId}`);
-    if (el) el.remove();
-    await loadDocuments();
+    const data = await r.json();
+    document.getElementById('invite-note').value = '';
+    status.className = 'status-msg ok';
+    status.textContent = `Invite created: ${data.token}`;
+    setTimeout(() => { status.textContent = ''; }, 5000);
+    await loadInvites();
+  } else {
+    status.className = 'status-msg err';
+    status.textContent = 'Failed to create invite.';
   }
 }
 
-async function pauseBriefings() {
-  await fetch('/api/pause', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' });
-  loadStatus(); loadSettings();
+function copyInviteLink(token) {
+  const link = `${window.location.origin}/register?token=${token}`;
+  navigator.clipboard.writeText(link).then(() => {
+    const btn = document.getElementById(`copy-${token}`);
+    if (btn) { btn.textContent = 'Copied!'; btn.classList.add('copied'); }
+    setTimeout(() => {
+      if (btn) { btn.textContent = 'Copy'; btn.classList.remove('copied'); }
+    }, 2500);
+  });
 }
 
-async function resumeBriefings() {
-  await fetch('/api/resume', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' });
-  loadStatus(); loadSettings();
+async function deleteInvite(token) {
+  if (!confirm('Delete this invite link?')) return;
+  const r = await fetch(`/api/admin/invite/${token}/delete`, { method: 'POST' });
+  if (r.ok) await loadInvites();
 }
 
-// Feedback
+async function toggleUser(username, btn) {
+  const r = await fetch(`/api/admin/users/${username}/toggle`, { method: 'POST' });
+  if (!r.ok) return;
+  const data = await r.json();
+  btn.className = `toggle-pill ${data.active ? 'active' : 'inactive'}`;
+  btn.textContent = data.active ? 'Active' : 'Disabled';
+}
+
+async function deleteUser(username) {
+  if (!confirm(`Remove access for ${username}? They will no longer be able to sign in.`)) return;
+  const r = await fetch(`/api/admin/users/${username}/delete`, { method: 'POST' });
+  if (r.ok) await loadUsers();
+}
+
+// ── Feedback ──
 function extractTrades(md) {
   const section = md.match(/##\s*Trade Construction Context([\s\S]*?)(?=\n##\s|\n#\s|$)/i);
   if (!section) return [];
@@ -1053,7 +1451,6 @@ async function renderFeedback(filename, md, existingFeedback) {
   const container = document.getElementById('feedback-items');
   if (!trades.length) { card.style.display = 'none'; return; }
   const existing = existingFeedback || [];
-  // Only show trade-type entries (no section field)
   const tradeEntries = existing.filter(e => !e.section);
   container.innerHTML = '';
   trades.forEach((trade, i) => {
@@ -1076,7 +1473,6 @@ async function renderFeedback(filename, md, existingFeedback) {
   card.style.display = 'block';
 }
 
-// Section feedback (inline per ## heading)
 function sfThumb(btn) {
   const row = btn.closest('.section-feedback-row');
   const dir = btn.dataset.dir;
@@ -1099,10 +1495,7 @@ async function sfSave(btn) {
   const r = await fetch('/api/feedback', {
     method: 'POST',
     headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({
-      filename: currentBriefingFile,
-      entries: [{ section, rating, note }]
-    })
+    body: JSON.stringify({ filename: currentBriefingFile, entries: [{ section, rating, note }] })
   });
   if (r.ok) {
     savedSpan.style.display = 'inline';
@@ -1145,8 +1538,7 @@ async function saveFeedback() {
   }
 }
 
-
-loadStatus();
+initApp();
 </script>
 </body>
 </html>"""

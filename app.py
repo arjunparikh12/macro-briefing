@@ -213,16 +213,34 @@ def api_save_feedback():
     if not re.match(r"^macro-briefing-\d{4}-\d{2}-\d{2}\.md$", filename):
         return jsonify({"error": "Invalid"}), 400
     date_key = filename.replace("macro-briefing-", "").replace(".md", "")
-    entries = [
-        {
-            "trade": str(e.get("trade", ""))[:500],
-            "rating": e.get("rating") if e.get("rating") in ("up", "down", None) else None,
+    entries = []
+    for e in body.get("entries", []):
+        rating = e.get("rating") if e.get("rating") in ("up", "down", None) else None
+        entry = {
+            "rating": rating,
             "note": str(e.get("note", ""))[:1000],
         }
-        for e in body.get("entries", [])
-    ]
+        if e.get("section"):
+            entry["section"] = str(e.get("section", ""))[:200]
+        else:
+            entry["trade"] = str(e.get("trade", ""))[:500]
+        entries.append(entry)
     data = load_feedback()
-    data[date_key] = entries
+    # Merge: keep section feedback and trade feedback together under same date key
+    existing = data.get(date_key, [])
+    # Separate new entries by type
+    new_sections = {e["section"]: e for e in entries if e.get("section")}
+    new_trades = [e for e in entries if not e.get("section")]
+    # Keep existing entries that aren't being replaced
+    kept = [e for e in existing if e.get("section") and e["section"] not in new_sections]
+    # If new_trades provided, replace all old trade entries
+    if new_trades:
+        kept = [e for e in kept]  # keep section entries
+        data[date_key] = kept + list(new_sections.values()) + new_trades
+    else:
+        # Only updating section feedback — merge with existing trade entries
+        existing_trades = [e for e in existing if not e.get("section")]
+        data[date_key] = kept + list(new_sections.values()) + existing_trades
     save_feedback_data(data)
     return jsonify({"ok": True})
 
@@ -359,7 +377,7 @@ HTML = r"""<!DOCTYPE html>
   .history-date { font-size: 14px; font-weight: 500; }
   .history-actions { display: flex; gap: 8px; }
 
-  /* Feedback */
+  /* Trade Feedback */
   .feedback-card { background: #0f0f0f; border: 1px solid var(--border);
                    border-radius: var(--radius); padding: 18px 20px; margin-bottom: 16px; }
   .feedback-card-title { font-size: 11px; font-weight: 600; letter-spacing: 0.08em;
@@ -382,6 +400,30 @@ HTML = r"""<!DOCTYPE html>
                        padding: 7px 16px; font-size: 13px; font-weight: 600; cursor: pointer; }
   .feedback-save-btn:disabled { opacity: 0.4; cursor: not-allowed; }
   .feedback-saved-msg { font-size: 12px; color: var(--green); display: none; }
+
+  /* Section Feedback (inline in briefing) */
+  .section-feedback-row { display: flex; align-items: center; gap: 7px; margin: 4px 0 18px;
+                          padding: 8px 12px; border-radius: 7px; background: rgba(255,255,255,0.03);
+                          border: 1px solid transparent; transition: border-color 0.2s; }
+  .section-feedback-row:hover { border-color: var(--border); }
+  .section-feedback-row .sf-label { font-size: 11px; color: var(--muted); font-family: -apple-system, sans-serif;
+                                     letter-spacing: 0.04em; white-space: nowrap; }
+  .sf-thumb { background: none; border: 1px solid var(--border); border-radius: 5px;
+              padding: 3px 9px; cursor: pointer; font-size: 13px; transition: all 0.15s;
+              color: var(--muted); line-height: 1.4; }
+  .sf-thumb:hover { border-color: var(--accent); }
+  .sf-thumb.sf-up   { background: rgba(76,175,110,0.15); border-color: var(--green); color: var(--green); }
+  .sf-thumb.sf-down { background: rgba(224,82,82,0.15);  border-color: var(--red);   color: var(--red); }
+  .sf-note { flex: 1; min-width: 120px; max-width: 360px; background: #0d0d0d;
+             border: 1px solid var(--border); border-radius: 5px; padding: 4px 8px;
+             color: var(--text); font-size: 12px; font-family: inherit; resize: none;
+             height: 28px; line-height: 1.4; transition: border-color 0.15s, height 0.15s; }
+  .sf-note:focus { outline: none; border-color: var(--accent); height: 52px; }
+  .sf-save { background: none; border: 1px solid var(--border); border-radius: 5px;
+             padding: 3px 10px; cursor: pointer; font-size: 11px; color: var(--muted);
+             transition: all 0.15s; white-space: nowrap; }
+  .sf-save:hover { border-color: var(--accent); color: var(--accent); }
+  .sf-saved { font-size: 11px; color: var(--green); display: none; }
 
   /* Settings form */
   .form-group { margin-bottom: 14px; }
@@ -618,26 +660,56 @@ function appendLog(box, text, type) {
 
 async function loadBriefing(filename) {
   currentBriefingFile = filename;
-  const r = await fetch(`/api/briefing/${filename}`);
-  if (!r.ok) return;
-  const data = await r.json();
+  const [briefingResp, feedbackResp] = await Promise.all([
+    fetch(`/api/briefing/${filename}`),
+    fetch(`/api/feedback?filename=${filename}`)
+  ]);
+  if (!briefingResp.ok) return;
+  const data = await briefingResp.json();
+  const allFeedback = feedbackResp.ok ? await feedbackResp.json() : [];
+
+  // Build section ratings map: { "Section Title": {rating, note} }
+  const sectionRatings = {};
+  for (const entry of allFeedback) {
+    if (entry.section) {
+      sectionRatings[entry.section] = { rating: entry.rating, note: entry.note || '' };
+    }
+  }
+
   const dateStr = filename.replace('macro-briefing-', '').replace('.md', '');
   document.getElementById('briefing-card-title').textContent = `Briefing — ${dateStr}`;
-  document.getElementById('briefing-content').innerHTML = renderMarkdown(data.content);
+  document.getElementById('briefing-content').innerHTML = renderMarkdown(data.content, sectionRatings);
   document.getElementById('briefing-card').style.display = 'block';
-  await renderFeedback(filename, data.content);
+  await renderFeedback(filename, data.content, allFeedback);
 }
 
-function renderMarkdown(md) {
-  return md
+function renderMarkdown(md, sectionRatings) {
+  sectionRatings = sectionRatings || {};
+  // Escape HTML first
+  let html = md
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/^# (.+)$/gm, '<h1>$1</h1>')
-    .replace(/^## (.+)$/gm, '<h2>$1</h2>')
+    .replace(/^## (.+)$/gm, (match, title) => {
+      const key = title.trim();
+      const saved = sectionRatings[key] || {};
+      const upCls   = saved.rating === 'up'   ? 'sf-up'   : '';
+      const downCls = saved.rating === 'down' ? 'sf-down' : '';
+      const noteVal = (saved.note || '').replace(/"/g, '&quot;');
+      return `<h2>${key}</h2><div class="section-feedback-row" data-section="${key.replace(/"/g,'&quot;')}">` +
+        `<span class="sf-label">Section:</span>` +
+        `<button class="sf-thumb ${upCls}" data-dir="up" onclick="sfThumb(this)">👍</button>` +
+        `<button class="sf-thumb ${downCls}" data-dir="down" onclick="sfThumb(this)">👎</button>` +
+        `<textarea class="sf-note" placeholder="Notes on this section...">${noteVal}</textarea>` +
+        `<button class="sf-save" onclick="sfSave(this)">Save</button>` +
+        `<span class="sf-saved">Saved</span>` +
+        `</div>`;
+    })
     .replace(/^### (.+)$/gm, '<h3>$1</h3>')
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
     .replace(/\*(.+?)\*/g, '<em>$1</em>')
     .replace(/\n{2,}/g, '</p><p>')
     .replace(/^/, '<p>').replace(/$/, '</p>');
+  return html;
 }
 
 async function loadHistory() {
@@ -693,16 +765,17 @@ function extractTrades(md) {
   return raw.length ? raw : [text];
 }
 
-async function renderFeedback(filename, md) {
+async function renderFeedback(filename, md, existingFeedback) {
   const trades = extractTrades(md);
   const card = document.getElementById('feedback-card');
   const container = document.getElementById('feedback-items');
   if (!trades.length) { card.style.display = 'none'; return; }
-  const r = await fetch(`/api/feedback?filename=${filename}`);
-  const existing = r.ok ? await r.json() : [];
+  const existing = existingFeedback || [];
+  // Only show trade-type entries (no section field)
+  const tradeEntries = existing.filter(e => !e.section);
   container.innerHTML = '';
   trades.forEach((trade, i) => {
-    const saved = existing[i] || {};
+    const saved = tradeEntries[i] || {};
     const upActive   = saved.rating === 'up'   ? 'active-up'   : '';
     const downActive = saved.rating === 'down' ? 'active-down' : '';
     const item = document.createElement('div');
@@ -719,6 +792,40 @@ async function renderFeedback(filename, md) {
     container.appendChild(item);
   });
   card.style.display = 'block';
+}
+
+// Section feedback (inline per ## heading)
+function sfThumb(btn) {
+  const row = btn.closest('.section-feedback-row');
+  const dir = btn.dataset.dir;
+  const wasActive = btn.classList.contains(`sf-${dir}`);
+  row.querySelectorAll('.sf-thumb').forEach(b => b.classList.remove('sf-up','sf-down'));
+  if (!wasActive) btn.classList.add(`sf-${dir}`);
+}
+
+async function sfSave(btn) {
+  if (!currentBriefingFile) return;
+  const row = btn.closest('.section-feedback-row');
+  const section = row.dataset.section;
+  const upBtn   = row.querySelector('[data-dir="up"]');
+  const downBtn = row.querySelector('[data-dir="down"]');
+  const note    = row.querySelector('.sf-note').value.trim();
+  const savedSpan = row.querySelector('.sf-saved');
+  let rating = null;
+  if (upBtn.classList.contains('sf-up'))     rating = 'up';
+  if (downBtn.classList.contains('sf-down')) rating = 'down';
+  const r = await fetch('/api/feedback', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({
+      filename: currentBriefingFile,
+      entries: [{ section, rating, note }]
+    })
+  });
+  if (r.ok) {
+    savedSpan.style.display = 'inline';
+    setTimeout(() => { savedSpan.style.display = 'none'; }, 3000);
+  }
 }
 
 function toggleThumb(btn) {
@@ -755,6 +862,7 @@ async function saveFeedback() {
     setTimeout(() => { savedMsg.style.display = 'none'; }, 4000);
   }
 }
+
 
 loadStatus();
 </script>

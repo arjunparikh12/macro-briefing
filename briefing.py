@@ -27,6 +27,182 @@ SEARCH_QUERIES = [
     "swap spreads treasury spreads",
 ]
 
+# ─── ARJUN'S TRADING FRAMEWORK ────────────────────────────────────────────────
+# Extracted from: trades2025.docx.pdf (discretionary trade log) and
+# Caxton APM Investment Strategy.pdf (systematic xccy basis signal writeup)
+ARJUN_FRAMEWORK = """
+## ARJUN'S TRADING FRAMEWORK — Internalize this completely. Think like he thinks.
+
+### WHO YOU ARE WRITING FOR
+Arjun Parikh is a QIS structurer at JPMorgan focused on rates, FX, and cross-currency basis.
+He runs both systematic and discretionary strategies. He thinks in terms of RV, carry, z-scores,
+term premium, funding risk premia, and macro regime shifts. He is NOT a directional macro tourist
+every trade has a clean structural rationale, a carry/roll component, and a risk management logic.
+
+---
+
+### PART 1: DISCRETIONARY TRADE HISTORY AND MENTAL MODELS
+(From his 2025 trade log with ~40 live trades across rates, xccy basis, vol)
+
+**Core Trade Archetypes He Uses:**
+
+1. **Rates Curve RV (bread and butter):**
+   - Butterflies: e.g. 2s/7s/30s belly-cheapening flies (pay belly, receive wings, weighted ~0.50:-1.0:0.65)
+   - Weighted to isolate term premium or duration-neutral carry. Always specify risk weights.
+   - Example rationale: "term premium rise in a selloff" - uses conditional bear structure
+
+2. **Forward Swap Curve Flatteners/Steepeners:**
+   - Expresses FOMC path views without outright duration risk
+   - e.g. Pay 2Yx1Y vs receive 2Yx3Y plus 6Mx10Y (weighted 40:80) -- Fed on hold rangebound
+   - e.g. Z5/Z6, U5/U6 SOFR futures flatteners -- when near-term easing is overpriced vs later cuts
+   - Money market curve RV: 6Mx3M / 3Mx1Y / 9Mx3M / 21Mx3M slopes -- positional RV, not outright
+
+3. **SOFR Futures Curve Trades:**
+   - Contract month RV: Reds/Greens/Blues flies (PCA cheapness/richness)
+   - e.g. Receive greens in Reds/Greens/Blues 5050 fly -- carry efficient, greens cheap on PCA
+   - Z5/Z7, Z5/Z6, U5/U6 flatteners when near-term cuts overpriced vs deferred
+   - "Sell wings of Z6Z7Z8 1:2:1 fly" = low-beta short duration proxy
+
+4. **Conditional Structures (midcurve options, payer ratios, receiver spreads):**
+   - Midcurve payers/receivers to express directional views with limited premium
+   - e.g. Greens/Golds conditional bear flatteners via 3M midcurve payers (0.87:1.0 weighted)
+   - Reds/Greens conditional bull steepeners via 6M midcurve receivers
+   - M6/M8 conditional bull steepeners via M6 3M SOFR calls plus M6 2Y midcurve calls
+   - Buy 3Mx2Y 1x2 receiver spreads -- low beta, carry efficient, ahead of dovish FOMC
+   - Payer ratios: 6Mx10Y 1x2 payer ratios (premium neutral, defined risk, bearish hedge)
+   - ALWAYS specify: expiry, underlying, structure (1x2, 1x1, fly), strikes if known
+
+5. **Swaption Vol Trades:**
+   - Vol surface RV: sell expensive left-side expiry/tail vs buy cheap right-side
+   - e.g. Sell 10Yx3Y straddles vs buy vega-neutral 5Yx20Y straddles (Fed independence/fiscal concerns)
+   - e.g. Buy 6Mx5Y straddles vs sell theta-neutral 6Mx30Y straddles (long 5Y tails vs 30Y)
+   - Synthetic forward vol: sell 1Y fwd 1Yx30Y vol via 2Yx30Y and 1Yx30Y swaptions
+   - Use vol RETURN MODEL to identify richness/cheapness, not just vol levels
+
+6. **Real Yield Trades:**
+   - Long 2y3y real yields -- more carry efficient, lower beta directional position
+   - 5y5y/10y10y real yield curve steepeners -- SEP dots, tariff pass-through, Fed cutting into rising inflation
+
+7. **Invoice/Swap Spreads:**
+   - Buy UXY invoice spreads on dovish refunding tone / Bessent focus on 10Y
+   - 10s/30s maturity-matched swap spread curve flatteners -- mean-reverting over 6 months
+
+**Risk Management Rules He Implicitly Uses:**
+- Always specify weights (e.g. 40:80, 0.87:1.0) -- duration-neutral or risk-weighted, never naked
+- Prefer carry-positive or premium-neutral structures where possible
+- Use conditional/options structures when vol is cheap or when he wants asymmetry
+- Frame as mean-reversion: "X is Y bp too flat/steep vs historical relationship"
+- Cite carry explicitly: "~4.5bp 3M carry+roll"
+- Check PCA richness/cheapness on SOFR curve for entry timing
+
+**His Macro Regime Priors (from trade rationales):**
+- Fed on hold (tariff inflation) => front-end stays anchored => flatteners in Z5/Z6, SOFR futures
+- Term premium rising => belly-cheapening butterflies, 2Y fwd steepeners vs spot flatteners
+- Fiscal dominance / debt issuance => long-end vol elevated, right-side swaptions rich vs left
+- BoC easing aggressively (Canada tariff impact) => USD/CAD OIS basis opportunities
+- Tariff shock => risk-off rally then reversal => conditional structures (payer swaptions on reversal)
+- China tariff de-escalation => carry efficient re-pricing => greens on SOFR fly
+
+---
+
+### PART 2: SYSTEMATIC XCCY BASIS SIGNAL -- The APM Strategy
+(From: Caxton APM Investment Strategy writeup)
+
+**Core Concept:**
+Cross-currency basis = deviation from Covered Interest Parity. Premium to borrow USD vs FX.
+Strategy captures mark-to-market changes in USD funding risk premia -- NOT a carry harvest.
+Pay-basis positions (long USD funding demand) generally carry negatively.
+
+**Universe:**
+- ESTR/SOFR (EUR), SONIA/SOFR (GBP), TONAR/SOFR (JPY), AONIA/SOFR (AUD), SARON/SOFR (CHF)
+- Tenors: 2Y (front-end liquidity drivers) and 10Y (technical + long-run risk premium)
+
+**2Y Basis Drivers (rolling 3M z-scores):**
+  CB balance sheet as pct of GDP (larger domestic B/S): Widens basis (more negative)
+  Reds/Greens SOFR curve (1Y1Y/2Y1Y) -- CB easing proxy: Tightens basis
+  1Yx1Y swaption vol (local): Tightens basis
+  Local equity indices (outperformance vs USD): Tightens basis
+
+**10Y Basis Drivers (rolling 3M z-scores):**
+  5s/30s swap curve slope (term premium proxy, steeper): Tightens basis
+  5Yx5Y rate vol (higher): Tightens basis
+  10Y swap spreads (outperformance vs USD): Widens basis
+  Local corporate bond indices (outperformance): Widens basis
+
+**Key Macro Levers to Monitor Daily:**
+1. CB balance sheets (QT/QE): Fed Reserve Management Purchases (USTs <=3Y) => tightens bases.
+   ECB/BOE QT running faster than Fed => widens ESTR/SONIA bases.
+   German fiscal expansion => may widen EUR 10Y basis (like BOJ experience).
+
+2. Fed SRP facility: Growing usage => stabilizes repo => tightens all bases.
+
+3. FX hedging demand: Foreign investors increasing USD hedge ratios => short USD in forwards => widens bases.
+   Fiscal/Fed independence concerns => accelerates hedging => wider bases.
+
+4. SLR reform: Would free dealer B/S => tighten bases across the board.
+
+5. Yankee/Reverse-Yankee issuance: Yankee (EUR corps in USD) => tightens intermediates.
+   Reverse-Yankee => widens. Monitor seasonal corporate debt patterns.
+
+6. Quarter/year-end seasonals: Acute USD funding stress => correlated widening across currencies.
+   Risk controls: scale down when cross-currency correlation rises (reduced diversification).
+
+**Composite Signal Logic:**
+- Compute rolling 3M z-scores for all drivers per currency per tenor
+- Modified cross-sectional z-score sizing (weights sum to +1 for directional, 0 for RV)
+- Level-neutral (RV) strategy: long/short basis pairs where z-scores diverge
+- Rebalance every 21 trading days
+
+**Recent Confirmed Signals (from trade log, for calibration):**
+- Receive 30Y SONIA/SOFR: UK selloff beta to Germany set to retrace: +15.7bp
+- Receive 3Mx10Y TONAR/SOFR: JPY basis not reflecting USD funding stress + Japan tariff: +6.9bp
+- 1y1y/1y10y ESTR/SOFR xccy basis curve flatteners: German fiscal widens intermediates; ECB B/S tightening vs Fed: +3.9bp
+- Pay 2Y SONIA/SOFR: diverging Fed/BOE paths; basis negatively correlated to BOE reserves; UK QT + BOE easing: +1.9bp
+
+**Risk Controls:**
+- Diversify across currencies (reduces single-pair funding stress risk)
+- Scale down when avg cross-currency correlation rises
+- Monthly drawdown controls when losses persistently exceed historical dispersion
+- Bid/ask: 2-3bp wide -- transact with multiple dealers, net long+short internally
+
+---
+
+### HOW TO APPLY THIS FRAMEWORK IN EVERY BRIEFING:
+
+**For "Systematic Signal Context" section:**
+- Run the z-score logic mentally: which CB B/S is expanding vs contracting?
+- Which equity index is outperforming (basis tightener for that currency)?
+- Is swaption vol elevated (basis tightener)? Is the swap curve steep (tightener at 10Y)?
+- Are SOFR Reds/Greens pricing easing (basis tightener for 2Y)?
+- Identify: which xccy pairs are dislocated? Is the 2Y or 10Y sector more interesting?
+- Flag quarter/year-end seasonal pressures or Yankee issuance dynamics
+
+**For "Trade Construction Context" section:**
+- Always think: what is the carry? What is the RV relationship? What is the directional macro view?
+- Use conditional structures when vol is cheap (midcurve payers/receivers, payer ratios)
+- Weight trades explicitly (e.g. 0.75:1.0 weighted, risk-neutral)
+- Cite the mean-reversion logic: "X bp cheap/rich vs 3M historical relationship"
+- For SOFR futures: check which contracts are PCA cheap/rich in Reds/Greens/Blues
+- For xccy basis: which composite z-score is most extreme? 2Y or 10Y? Which currency?
+- For vol: which expiry-tail is dislocated? Left vs right side of the surface?
+- For curve: what is the carry+roll over 3M? Is it positive?
+
+**Trade Structures Arjun PREFERS (use these archetypes):**
+- Butterflies (curve, SOFR futures, real yields): specify weights, direction, rationale
+- Conditional structures via midcurve options: specify expiry, underlying, 1x1 or 1x2
+- Forward-starting swaps: pay/receive Yx1Y, Yx3Y combinations
+- SOFR futures calendar spreads: ZX/ZY flatteners/steepeners with specific rationale
+- Xccy basis curve RV: 1Y1Y / 1Y10Y basis flatteners/steepeners
+- Vol surface RV: sell expensive expiry-tail vs buy cheap expiry-tail (vega-neutral)
+- Real yield trades: 2y3y, 5y5y/10y10y carry efficient expressions
+
+**Trade Structures to AVOID unless specifically justified:**
+- Naked outright duration (too much carry cost, hard to size)
+- Simple pay/receive fixed without a structural RV or cross-asset story
+- Vague "buy protection" or "go long vol" without specifying the exact surface location
+- Overcrowded consensus trades without a differentiated entry angle
+"""
+
 
 def brave_search(query: str, count: int = 5) -> list[dict]:
     """Search using Brave Search API. Returns list of {title, url, description}."""
@@ -80,101 +256,170 @@ def load_feedback_summary() -> str:
     if not data:
         return ""
 
-    bad, good = [], []
-    for date_key, entries in sorted(data.items(), reverse=True)[:10]:
+    bad_trades, good_trades = [], []
+    section_feedback = []
+
+    for date_key, entries in sorted(data.items(), reverse=True)[:14]:
         for entry in entries:
             rating = entry.get("rating")
             trade = entry.get("trade", "").strip()
             note = entry.get("note", "").strip()
-            if rating == "down" and trade:
-                bad.append(f"- [{date_key}] REJECTED: {trade}" + (f" — reason: {note}" if note else ""))
-            elif rating == "up" and trade:
-                good.append(f"- [{date_key}] APPROVED: {trade}" + (f" — note: {note}" if note else ""))
+            section = entry.get("section", "").strip()
 
-    if not bad and not good:
+            if section:
+                # Section-level feedback
+                if rating and note:
+                    emoji = "GOOD" if rating == "up" else "IMPROVE"
+                    section_feedback.append(
+                        f"- [{date_key}] {emoji} section '{section}': {note}"
+                    )
+                elif rating == "down":
+                    section_feedback.append(
+                        f"- [{date_key}] IMPROVE section '{section}': marked as poor quality"
+                    )
+            else:
+                # Trade-level feedback
+                if rating == "down" and trade:
+                    bad_trades.append(
+                        f"- [{date_key}] REJECTED: {trade}" + (f" -- reason: {note}" if note else "")
+                    )
+                elif rating == "up" and trade:
+                    good_trades.append(
+                        f"- [{date_key}] APPROVED: {trade}" + (f" -- note: {note}" if note else "")
+                    )
+
+    if not bad_trades and not good_trades and not section_feedback:
         return ""
 
-    lines = ["\n## Your Feedback on Past Trade Ideas — apply strictly to Trade Construction Context\n"]
-    if bad:
-        lines.append("### Structures to AVOID (you rejected these):")
-        lines.extend(bad)
+    lines = ["\n## Your Feedback on Past Briefings -- apply strictly\n"]
+
+    if section_feedback:
+        lines.append("### Section Quality Feedback (adjust content depth/style of these sections):")
+        lines.extend(section_feedback[:20])
         lines.append("")
-    if good:
-        lines.append("### Structures that resonated (build on these):")
-        lines.extend(good)
+
+    if bad_trades:
+        lines.append("### Trade Structures to AVOID (you rejected these):")
+        lines.extend(bad_trades)
         lines.append("")
-    lines.append("Do NOT repeat rejected structures. Build on approved ones where relevant.")
+
+    if good_trades:
+        lines.append("### Trade Structures that resonated (build on these):")
+        lines.extend(good_trades)
+        lines.append("")
+
+    lines.append("Apply this feedback: adjust depth, style, and structure of the relevant sections. Do NOT repeat rejected trade structures.")
     return "\n".join(lines)
 
 
 def build_prompt(today: str, news: str, feedback: str) -> str:
-    return f"""You are generating a daily macro briefing for Arjun Parikh, a QIS structurer at JPM focused on rates, FX, and cross-currency basis.
+    return f"""You are generating a daily macro briefing for Arjun Parikh, a QIS structurer at JPMorgan.
 
 Today's date: {today}
+
+{ARJUN_FRAMEWORK}
 
 ## Current Market News (from live searches)
 
 {news}
 
-## Briefing Structure
+---
 
-Write in a direct, analytical style — like an internal morning note at a top macro hedge fund. Every sentence carries signal. No filler.
+## Briefing Instructions
 
-CRITICAL: FX and rates must receive EQUAL emphasis throughout.
+Write in a direct, analytical style -- like an internal morning note at a top macro hedge fund written BY Arjun FOR Arjun. Every sentence carries signal. No filler. No hedging language. No "it is worth noting that." If you do not have data, say "No data available" and move on.
 
-# Daily Macro Briefing — {today}
+CRITICAL: FX and rates must receive EQUAL emphasis throughout. Cross-currency basis is a first-class section, not an afterthought.
+
+Apply Arjun's framework above to every section. For systematic signal context, run the z-score logic. For trade construction, use his preferred archetypes with explicit weights and rationale.
+
+---
+
+# Daily Macro Briefing -- {today}
 
 ## Overnight Summary
-[2-3 paragraphs: key developments across rates, FX, funding markets. What moved, why, what the market is pricing.]
+[2-3 paragraphs: key developments across rates, FX, funding markets. What moved, why, what the market is pricing. Flag any regime shifts.]
 
 ## Central Bank Watch
-[Fed, ECB, BOE, BOJ policy state. Speeches, minutes, decisions. OIS/futures pricing for each. Balance sheet policy changes.]
+[Fed, ECB, BOE, BOJ policy state. Speeches, minutes, decisions. OIS/futures pricing for each CB. Balance sheet policy: who is doing QT, how fast, what is the net liquidity impact on xccy basis? SRP facility updates if relevant.]
 
 ## Rates Market Assessment
 
 ### Yield Curve & Term Premium
-[Yield levels and curve moves. Term premium drivers. Auction/refunding updates. Forward curve dynamics.]
+[Yield levels and curve moves. Term premium drivers -- supply, fiscal, inflation risk premium. Auction/refunding updates. Forward curve dynamics. Is the 2Y fwd steeper/flatter than spot? By how much vs 3M history?]
 
 ### SOFR Futures & Money Markets
-[Front-end cut/hike pricing. Rich/cheap contract months. Repo conditions. Reserve levels.]
+[Front-end cut/hike pricing by contract month. Identify rich/cheap contracts on PCA basis (Reds/Greens/Blues). Repo conditions. Reserve levels. Any dislocations in Z5/Z6/Z7/Z8 relative pricing?]
 
 ### Volatility Surface
-[Swaption vol — left vs right side, expiry-tail dynamics. Realized vs implied.]
+[Swaption vol -- left vs right side of the surface. Which expiry-tail is expensive/cheap? Realized vs implied. Forward vol premium. Are 5Yx20Y or 10Yx3Y tails dislocated?]
 
 ### Swap Spreads & Funding
-[Treasury-swap spread dynamics. USD funding conditions.]
+[Treasury-swap spread dynamics at 10Y and 30Y. Maturity-matched spread curve (10s/30s). USD funding conditions. Invoice spread moves on key CTD bonds.]
 
 ## FX Market Assessment
 
 ### G10 Spot & Positioning
-[USD direction. EUR/USD, GBP/USD, USD/JPY, AUD/USD, USD/CHF, USD/CAD. Drivers, positioning, trade-weighted dollar.]
+[USD direction and DXY level. EUR/USD, GBP/USD, USD/JPY, AUD/USD, USD/CHF, USD/CAD. Key drivers. Positioning (CFTC or implied). Trade-weighted dollar. Any positioning extremes?]
 
 ### FX Volatility & Hedging Flows
-[Implied vol trends. Risk reversals. Foreign investor hedging behavior. FX hedge ratio shifts.]
+[Implied vol trends across tenors. Risk reversals -- which pairs show skew extremes? Foreign investor hedging behavior: are hedge ratios rising/falling? Any evidence of increased FX forward demand from foreign UST holders? This directly drives xccy basis -- connect the dots.]
 
 ### FX Carry & Forward Dynamics
-[Rate differentials driving carry. Forward points. FX forward moves. Relative CB path implications.]
+[Rate differentials driving carry by pair. Forward points. FX forward moves. BoC, RBA, SNB, BoE path vs Fed -- which relative CB path creates the best carry trade setup? USD/CAD OIS basis dynamics given BoC stance.]
 
 ## Cross-Currency Basis
-[ESTR/SOFR, SONIA/SOFR, TONAR/SOFR at 2Y and 10Y. Drivers: USD funding, CB balance sheet divergence, Yankee/Reverse-Yankee issuance, SLR reform, quarter-end seasonals, FX hedging demand.]
+[ESTR/SOFR, SONIA/SOFR, TONAR/SOFR, AONIA/SOFR, SARON/SOFR at 2Y and 10Y.
+For each pair, assess:
+- Direction vs prior day/week
+- Which z-score factor is driving it (CB B/S, equity, swaption vol, swap spreads)?
+- Is the 2Y or 10Y sector dislocated vs historical relationship?
+- Any Yankee/Reverse-Yankee issuance dynamics?
+- Quarter/year-end seasonal pressure?
+- SLR reform expectations?
+Flag the pair(s) with the most extreme composite z-score and state direction of the signal.]
 
 ## Systematic Signal Context
-[Quant-relevant observations: mean-reversion setups, z-score extremes in RV, carry/roll-down opportunities, curve directionality, PCA cheapness/richness. Frame as "the data looks like X, which historically associates with Y."]
+[Run the APM z-score logic:
+- Which CB B/S is expanding vs contracting this week/month? Implication for each currency's basis.
+- Reds/Greens SOFR slope today: pricing easing or holding? Implication for 2Y basis.
+- Swaption vol (1Yx1Y) elevated or depressed? Which currencies?
+- Equity index relative performance (local vs SPX) -- which currencies show tightening vs widening signal?
+- 5s/30s local swap curve slope -- steep or flat? 10Y basis implication.
+- 5Yx5Y vol -- elevated? 10Y basis tightener.
+- Corporate bond spread performance -- basis widener or tightener?
+Synthesize: "Composite 2Y signal for [currency] is [pay/receive/neutral], driven by [X]. 10Y signal is [direction], driven by [Y]. Most interesting dislocation today: [pair + tenor]."
+Also flag: any PCA cheapness/richness on SOFR curve? Mean-reversion setups in swap curve RV?]
 
 ## Key Events Ahead
-[Data releases today/this week. CB speakers. Auctions. FOMC/ECB/BOE meeting dates. Geopolitical events.]
+[Data releases today/this week with consensus vs prior. CB speakers and hawkish/dovish bias. Treasury auctions (size, sector, recent tail/stop-through history). FOMC/ECB/BOE/BOJ meeting dates and current market pricing. Geopolitical events with market impact.]
 
 ## Trade Construction Context
-[1-2 illustrative trade frameworks. Frame as: "Given [backdrop], structures like [type] may offer attractive risk/reward because [reasoning]."
-Focus: curve RV (steepeners/flatteners/butterflies), conditional structures (midcurve payers/receivers, payer ratios, receiver spreads, straddles), xccy basis trades, forward starting swaps, real yield trades, vol trades.
-ALWAYS specify direction explicitly: pay/receive, long/short, payer/receiver — never leave direction ambiguous.]
+[2-3 illustrative trade frameworks built FROM TODAY'S DATA using Arjun's preferred archetypes.
+
+For each trade, ALWAYS include ALL of:
+- Exact structure: instrument type, expiry, tenor, direction (pay/receive/long/short/payer/receiver), and risk weights if a spread/fly
+- Rationale: the specific macro or RV driver TODAY that makes this interesting
+- Carry/roll: estimated bp of 3M carry+roll (positive preferred)
+- Entry logic: what level or z-score makes this an attractive entry right now
+- Risk: what scenario invalidates the trade
+
+Preferred structures to consider:
+- SOFR futures curve trade if Reds/Greens/Blues show PCA dislocation
+- Xccy basis trade if composite z-score is extreme (specify currency, tenor, direction)
+- Conditional structure (midcurve payer/receiver, payer ratio) if vol is cheap and direction is clear
+- Butterfly (rates curve, real yields) if term premium narrative is active
+- Vol surface RV if left/right side dislocation visible
+
+NEVER: naked duration, vague direction, unweighted spreads, or consensus crowded trades without a differentiated angle.]
 
 ## Quality Standards
-- Source every market claim from the news above
-- No fabricated data, levels, or quotes — if info is unavailable, say so
-- Use bp for rates, % for FX, actual levels where available
-- 1500-2500 words total, dense and actionable
+- Source every market claim from the live news above
+- No fabricated data, levels, or quotes -- if info is unavailable, say "No data -- check Bloomberg"
+- Use bp for rates moves and levels, pct for FX, actual levels where available
+- 1800-2800 words total, dense and actionable
 - FX and rates sections equal in depth
+- Cross-currency basis section is always present and always has at least one actionable observation
 {feedback}"""
 
 

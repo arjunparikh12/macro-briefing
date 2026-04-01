@@ -6,6 +6,7 @@ Deploy on Railway. Accessible from any device, anywhere.
 import json
 import os
 import re
+import uuid
 import queue
 import threading
 from datetime import date, datetime
@@ -16,20 +17,24 @@ from flask import (
     Flask, Response, jsonify, render_template_string,
     request, session, redirect, url_for
 )
+from werkzeug.utils import secure_filename
 from apscheduler.schedulers.background import BackgroundScheduler
 
 import briefing as briefing_module
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", os.urandom(24))
+app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024  # 10 MB max upload
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 DATA_DIR       = Path(__file__).parent / "data"
 BRIEFINGS_DIR  = DATA_DIR / "briefings"
 FEEDBACK_FILE  = DATA_DIR / "feedback.json"
 PAUSE_FILE     = DATA_DIR / ".paused"
+KNOWLEDGE_DIR  = DATA_DIR / "knowledge"
 DATA_DIR.mkdir(exist_ok=True)
 BRIEFINGS_DIR.mkdir(exist_ok=True)
+KNOWLEDGE_DIR.mkdir(exist_ok=True)
 
 # ── Auth ───────────────────────────────────────────────────────────────────────
 APP_PASSWORD = os.environ.get("APP_PASSWORD", "changeme")
@@ -244,6 +249,154 @@ def api_save_feedback():
     save_feedback_data(data)
     return jsonify({"ok": True})
 
+# ── Document knowledge base ────────────────────────────────────────────────────
+ALLOWED_EXTENSIONS = {".pdf", ".docx", ".txt"}
+
+def extract_text_from_file(filepath: Path) -> str:
+    """Extract plain text from PDF, DOCX, or TXT file."""
+    suffix = filepath.suffix.lower()
+    try:
+        if suffix == ".pdf":
+            import pdfplumber
+            pages = []
+            with pdfplumber.open(filepath) as pdf:
+                for page in pdf.pages[:25]:  # max 25 pages
+                    text = page.extract_text()
+                    if text:
+                        pages.append(text)
+            return "\n".join(pages)
+        elif suffix == ".docx":
+            from docx import Document
+            doc = Document(filepath)
+            return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+        else:  # .txt
+            return filepath.read_text(errors="replace")[:60000]
+    except Exception as e:
+        return f"[Text extraction error: {e}]"
+
+def summarize_document(title: str, raw_text: str) -> str:
+    """Use Claude Haiku (cheap/fast) to produce a focused knowledge note from document text.
+    This runs ONCE at upload time — the result is stored and reused forever."""
+    from anthropic import Anthropic
+    haiku_client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+    resp = haiku_client.messages.create(
+        model="claude-haiku-4-5",
+        max_tokens=700,
+        messages=[{
+            "role": "user",
+            "content": (
+                "Extract the key macro/rates/FX/xccy basis insights from this document "
+                "for use in daily macro briefings for a QIS structurer.\n\n"
+                "Output a concise structured note (300-400 words) covering:\n"
+                "- Core thesis or framework\n"
+                "- Key variables and signals to monitor\n"
+                "- Trade structures or patterns described\n"
+                "- Any quantitative rules, thresholds, or z-score logic\n"
+                "- How this applies to daily briefing preparation\n\n"
+                f"Document title: {title}\n\n"
+                f"Document content:\n{raw_text[:9000]}"
+            )
+        }]
+    )
+    return resp.content[0].text
+
+def list_documents() -> list:
+    """Return all knowledge base documents as a list of dicts (no summary text)."""
+    docs = []
+    for f in sorted(KNOWLEDGE_DIR.glob("*.json"), reverse=True):
+        try:
+            with open(f) as fp:
+                doc = json.load(fp)
+            docs.append({
+                "id": doc["id"],
+                "title": doc["title"],
+                "filename": doc["filename"],
+                "uploaded_at": doc["uploaded_at"],
+                "active": doc.get("active", True),
+            })
+        except Exception:
+            continue
+    return docs
+
+@app.route("/api/upload", methods=["POST"])
+@login_required
+def api_upload():
+    if "file" not in request.files:
+        return jsonify({"error": "No file provided"}), 400
+    f = request.files["file"]
+    if not f.filename:
+        return jsonify({"error": "No filename"}), 400
+
+    suffix = Path(f.filename).suffix.lower()
+    if suffix not in ALLOWED_EXTENSIONS:
+        return jsonify({"error": f"File type {suffix} not allowed. Use .pdf, .docx, or .txt"}), 400
+
+    safe_name = secure_filename(f.filename)
+    doc_id = str(uuid.uuid4())[:8]
+    # Store raw file temporarily for extraction
+    tmp_path = DATA_DIR / f"tmp_{doc_id}{suffix}"
+    try:
+        f.save(str(tmp_path))
+        raw_text = extract_text_from_file(tmp_path)
+        if not raw_text.strip():
+            return jsonify({"error": "Could not extract text from file"}), 422
+
+        title = Path(f.filename).stem.replace("_", " ").replace("-", " ")
+        summary = summarize_document(title, raw_text)
+
+        doc_record = {
+            "id": doc_id,
+            "title": title,
+            "filename": safe_name,
+            "summary": summary,
+            "uploaded_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "active": True,
+        }
+        kb_file = KNOWLEDGE_DIR / f"{doc_id}.json"
+        kb_file.write_text(json.dumps(doc_record, indent=2))
+
+        return jsonify({"ok": True, "doc": {
+            "id": doc_id,
+            "title": title,
+            "filename": safe_name,
+            "uploaded_at": doc_record["uploaded_at"],
+            "active": True,
+        }})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink()
+
+@app.route("/api/documents", methods=["GET"])
+@login_required
+def api_list_documents():
+    return jsonify(list_documents())
+
+@app.route("/api/documents/<doc_id>/toggle", methods=["POST"])
+@login_required
+def api_toggle_document(doc_id):
+    if not re.match(r"^[a-f0-9]{8}$", doc_id):
+        return jsonify({"error": "Invalid id"}), 400
+    kb_file = KNOWLEDGE_DIR / f"{doc_id}.json"
+    if not kb_file.exists():
+        return jsonify({"error": "Not found"}), 404
+    with open(kb_file) as fp:
+        doc = json.load(fp)
+    doc["active"] = not doc.get("active", True)
+    kb_file.write_text(json.dumps(doc, indent=2))
+    return jsonify({"ok": True, "active": doc["active"]})
+
+@app.route("/api/documents/<doc_id>/delete", methods=["POST"])
+@login_required
+def api_delete_document(doc_id):
+    if not re.match(r"^[a-f0-9]{8}$", doc_id):
+        return jsonify({"error": "Invalid id"}), 400
+    kb_file = KNOWLEDGE_DIR / f"{doc_id}.json"
+    if kb_file.exists():
+        kb_file.unlink()
+    return jsonify({"ok": True})
+
 # ── Scheduler (auto-generate at 6 AM ET Mon-Fri) ──────────────────────────────
 def scheduled_generate():
     if PAUSE_FILE.exists():
@@ -425,6 +578,32 @@ HTML = r"""<!DOCTYPE html>
   .sf-save:hover { border-color: var(--accent); color: var(--accent); }
   .sf-saved { font-size: 11px; color: var(--green); display: none; }
 
+  /* Knowledge Base / Documents */
+  .doc-item { display: flex; align-items: center; gap: 10px; padding: 10px 0;
+              border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+  .doc-item:last-child { border-bottom: none; }
+  .doc-name { font-size: 13px; font-weight: 500; flex: 1; min-width: 120px; word-break: break-word; }
+  .doc-date { font-size: 11px; color: var(--muted); white-space: nowrap; }
+  .doc-actions { display: flex; gap: 6px; align-items: center; }
+  .toggle-pill { padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: 600;
+                 cursor: pointer; border: none; transition: all 0.15s; }
+  .toggle-pill.active   { background: rgba(76,175,110,0.15); color: var(--green); }
+  .toggle-pill.inactive { background: rgba(200,169,110,0.1); color: var(--muted); }
+  .doc-delete { background: none; border: 1px solid var(--border); border-radius: 5px;
+                padding: 3px 9px; cursor: pointer; font-size: 12px; color: var(--muted);
+                transition: all 0.15s; }
+  .doc-delete:hover { border-color: var(--red); color: var(--red); }
+  .upload-area { margin-top: 12px; }
+  .upload-status { font-size: 12px; color: var(--muted); margin-top: 8px; min-height: 18px; }
+  .upload-status.ok  { color: var(--green); }
+  .upload-status.err { color: var(--red); }
+  .storage-steps { font-size: 12px; color: var(--muted); line-height: 2;
+                   background: #0a0a0a; border: 1px solid var(--border); border-radius: 7px;
+                   padding: 12px 14px; margin-top: 10px; }
+  .storage-steps strong { color: var(--text); }
+  .storage-steps code { background: #1a1a1a; padding: 1px 5px; border-radius: 4px;
+                        font-family: "SF Mono", monospace; font-size: 11px; color: var(--accent); }
+
   /* Settings form */
   .form-group { margin-bottom: 14px; }
   .form-group label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
@@ -535,11 +714,44 @@ HTML = r"""<!DOCTYPE html>
         <button class="btn btn-primary" onclick="resumeBriefings()">Resume</button>
       </div>
     </div>
+
+    <div class="card">
+      <div class="card-title">Knowledge Base</div>
+      <p style="font-size:12px;color:var(--muted);line-height:1.6;margin-bottom:14px">
+        Upload research documents (.pdf, .docx, .txt). Each is summarized <em>once</em> using a lightweight AI call,
+        then those notes are injected into every future briefing. Toggle off to exclude from prompts without deleting.
+      </p>
+      <div id="doc-list"><div class="empty" style="padding:12px 0">No documents uploaded yet.</div></div>
+      <div class="upload-area">
+        <input type="file" id="doc-upload-input" accept=".pdf,.docx,.txt" style="display:none" onchange="uploadDocument(this)">
+        <button class="btn btn-primary btn-sm" onclick="document.getElementById('doc-upload-input').click()" id="upload-btn">
+          + Upload Document
+        </button>
+        <div class="upload-status" id="upload-status"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Persistent Storage (Railway Volume)</div>
+      <p style="font-size:12px;color:var(--muted);line-height:1.6;margin-bottom:10px">
+        By default, Railway resets the <code style="background:#1a1a1a;padding:1px 5px;border-radius:4px;font-family:monospace;font-size:11px;color:var(--accent)">data/</code> folder on every code deploy —
+        wiping uploaded documents, briefings, and feedback. Set up a Volume once to make everything permanent:
+      </p>
+      <div class="storage-steps">
+        <strong>One-time setup:</strong><br>
+        1. Open your <strong>Railway project dashboard</strong><br>
+        2. Click your service → <strong>Volumes</strong> tab → <strong>Add Volume</strong><br>
+        3. Set mount path: <code>/app/data</code><br>
+        4. Click <strong>Deploy</strong><br><br>
+        After this, all uploads, briefings &amp; feedback survive code deploys forever.
+      </div>
+    </div>
+
     <div class="card">
       <div class="card-title">About</div>
       <p style="font-size:13px;color:var(--muted);line-height:1.6">
         Briefings auto-generate at <strong style="color:var(--text)">6 AM ET Mon–Fri</strong> using the Anthropic API + live web search.<br><br>
-        Feedback you leave on trade ideas is permanently stored and injected into future prompts — the system learns your preferences over time.
+        Two learning systems run in parallel: your feedback (section + trade ratings) and your uploaded documents are both injected into every briefing prompt. Documents are summarized once at upload — no repeated API cost.
       </p>
     </div>
   </div>
@@ -741,6 +953,76 @@ async function loadSettings() {
   schedRow.innerHTML = s.paused
     ? `<span class="pill pill-red"><span class="dot"></span>Paused</span>`
     : `<span class="pill pill-green"><span class="dot"></span>Active — Mon-Fri 6 AM ET</span>`;
+  await loadDocuments();
+}
+
+async function loadDocuments() {
+  const r = await fetch('/api/documents');
+  if (!r.ok) return;
+  const docs = await r.json();
+  const list = document.getElementById('doc-list');
+  if (!docs.length) {
+    list.innerHTML = '<div class="empty" style="padding:12px 0">No documents uploaded yet.</div>';
+    return;
+  }
+  list.innerHTML = docs.map(d => `
+    <div class="doc-item" id="doc-${d.id}">
+      <span class="doc-name">${d.title}</span>
+      <span class="doc-date">${d.uploaded_at}</span>
+      <div class="doc-actions">
+        <button class="toggle-pill ${d.active ? 'active' : 'inactive'}"
+          onclick="toggleDocument('${d.id}', this)">${d.active ? 'Active' : 'Off'}</button>
+        <button class="doc-delete" onclick="deleteDocument('${d.id}')">✕</button>
+      </div>
+    </div>`).join('');
+}
+
+async function uploadDocument(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const status = document.getElementById('upload-status');
+  const btn = document.getElementById('upload-btn');
+  status.className = 'upload-status';
+  status.textContent = 'Uploading and processing... (takes ~10 seconds)';
+  btn.disabled = true;
+  input.value = '';
+  const formData = new FormData();
+  formData.append('file', file);
+  try {
+    const r = await fetch('/api/upload', { method: 'POST', body: formData });
+    const data = await r.json();
+    if (r.ok && data.ok) {
+      status.className = 'upload-status ok';
+      status.textContent = `Processed: "${data.doc.title}" — now injected into all future briefings`;
+      await loadDocuments();
+    } else {
+      status.className = 'upload-status err';
+      status.textContent = `Error: ${data.error || 'Upload failed'}`;
+    }
+  } catch(e) {
+    status.className = 'upload-status err';
+    status.textContent = `Error: ${e.message}`;
+  }
+  btn.disabled = false;
+  setTimeout(() => { status.textContent = ''; status.className = 'upload-status'; }, 8000);
+}
+
+async function toggleDocument(docId, btn) {
+  const r = await fetch(`/api/documents/${docId}/toggle`, { method: 'POST' });
+  if (!r.ok) return;
+  const data = await r.json();
+  btn.className = `toggle-pill ${data.active ? 'active' : 'inactive'}`;
+  btn.textContent = data.active ? 'Active' : 'Off';
+}
+
+async function deleteDocument(docId) {
+  if (!confirm('Remove this document from the knowledge base?')) return;
+  const r = await fetch(`/api/documents/${docId}/delete`, { method: 'POST' });
+  if (r.ok) {
+    const el = document.getElementById(`doc-${docId}`);
+    if (el) el.remove();
+    await loadDocuments();
+  }
 }
 
 async function pauseBriefings() {

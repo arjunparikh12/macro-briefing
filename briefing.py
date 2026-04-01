@@ -7,6 +7,7 @@ import os
 import json
 import requests
 from datetime import date
+from pathlib import Path
 from anthropic import Anthropic
 
 client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
@@ -246,6 +247,31 @@ def gather_news() -> str:
     return "\n".join(sections) if sections else "No search results available."
 
 
+def load_knowledge_base() -> str:
+    """Load pre-processed document summaries from data/knowledge/ and format for prompt injection.
+    Documents are summarized ONCE at upload time (not on every briefing call).
+    Only active documents are included. Returns empty string if no docs uploaded."""
+    kb_dir = Path(__file__).parent / "data" / "knowledge"
+    if not kb_dir.exists():
+        return ""
+    notes = []
+    for f in sorted(kb_dir.glob("*.json")):
+        try:
+            with open(f) as fp:
+                doc = json.load(fp)
+            if doc.get("active", True) and doc.get("summary"):
+                notes.append(f"### {doc.get('title', f.stem)}\n{doc['summary']}")
+        except Exception:
+            continue
+    if not notes:
+        return ""
+    return (
+        "\n## Knowledge Base (from your uploaded documents -- apply to all sections)\n\n"
+        + "\n\n".join(notes)
+        + "\n"
+    )
+
+
 def load_feedback_summary() -> str:
     """Load feedback from data/feedback.json and format for prompt injection."""
     feedback_path = os.path.join(os.path.dirname(__file__), "data", "feedback.json")
@@ -312,13 +338,13 @@ def load_feedback_summary() -> str:
     return "\n".join(lines)
 
 
-def build_prompt(today: str, news: str, feedback: str) -> str:
+def build_prompt(today: str, news: str, feedback: str, knowledge: str = "") -> str:
     return f"""You are generating a daily macro briefing for Arjun Parikh, a QIS structurer at JPMorgan.
 
 Today's date: {today}
 
 {ARJUN_FRAMEWORK}
-
+{knowledge}
 ## Current Market News (from live searches)
 
 {news}
@@ -439,7 +465,8 @@ def generate_briefing(stream_callback=None) -> str:
         stream_callback("News gathered. Generating briefing with Claude...\n")
 
     feedback = load_feedback_summary()
-    prompt = build_prompt(today, news, feedback)
+    knowledge = load_knowledge_base()
+    prompt = build_prompt(today, news, feedback, knowledge)
 
     full_text = ""
     with client.messages.stream(

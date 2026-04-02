@@ -32,20 +32,29 @@ SEARCH_QUERIES = [
 # Extracted from: trades2025.docx.pdf (discretionary trade log) and
 # Caxton APM Investment Strategy.pdf (systematic xccy basis signal writeup)
 ARJUN_FRAMEWORK = """
-## ARJUN'S TRADING FRAMEWORK — Internalize this completely. Think like he thinks.
+## ARJUN'S TRADING FRAMEWORK — Use this as a MENTAL MODEL, not a trade list.
 
 ### WHO YOU ARE WRITING FOR
 Arjun Parikh is a QIS structurer at JPMorgan focused on rates, FX, and cross-currency basis.
 He runs both systematic and discretionary strategies. He thinks in terms of RV, carry, z-scores,
-term premium, funding risk premia, and macro regime shifts. He is NOT a directional macro tourist
+term premium, funding risk premia, and macro regime shifts. He is NOT a directional macro tourist —
 every trade has a clean structural rationale, a carry/roll component, and a risk management logic.
+
+### CRITICAL INSTRUCTION — READ THIS FIRST
+The trade history and signal frameworks below are THINKING TEMPLATES, not a menu of trades to recommend.
+DO NOT regurgitate or re-suggest specific trades from his log (e.g. "receive greens in Reds/Greens/Blues fly"
+or "pay 2Y SONIA/SOFR basis"). Those trades were context-specific to the date they were put on.
+Instead, understand the INTUITION behind each archetype (why that structure? what was the macro setup?)
+and apply that same style of thinking to WHATEVER the current macro environment presents.
+Your job is original synthesis: map his frameworks onto today's news and data to generate FRESH ideas
+that Arjun hasn't already thought of. He already knows his own trade log — repeating it back adds zero value.
 
 ---
 
-### PART 1: DISCRETIONARY TRADE HISTORY AND MENTAL MODELS
-(From his 2025 trade log with ~40 live trades across rates, xccy basis, vol)
+### PART 1: DISCRETIONARY TRADE ARCHETYPES (for intuition — NOT a trade recommendation list)
+(Derived from his 2025 trade log. These illustrate HOW he thinks, not WHAT to trade today.)
 
-**Core Trade Archetypes He Uses:**
+**Core Trade Archetypes (understand the reasoning pattern, not the specific trade):**
 
 1. **Rates Curve RV (bread and butter):**
    - Butterflies: e.g. 2s/7s/30s belly-cheapening flies (pay belly, receive wings, weighted ~0.50:-1.0:0.65)
@@ -96,18 +105,21 @@ every trade has a clean structural rationale, a carry/roll component, and a risk
 - Cite carry explicitly: "~4.5bp 3M carry+roll"
 - Check PCA richness/cheapness on SOFR curve for entry timing
 
-**His Macro Regime Priors (from trade rationales):**
-- Fed on hold (tariff inflation) => front-end stays anchored => flatteners in Z5/Z6, SOFR futures
-- Term premium rising => belly-cheapening butterflies, 2Y fwd steepeners vs spot flatteners
-- Fiscal dominance / debt issuance => long-end vol elevated, right-side swaptions rich vs left
-- BoC easing aggressively (Canada tariff impact) => USD/CAD OIS basis opportunities
-- Tariff shock => risk-off rally then reversal => conditional structures (payer swaptions on reversal)
-- China tariff de-escalation => carry efficient re-pricing => greens on SOFR fly
+**His Macro Regime Mapping (how he connects macro to structure — apply this REASONING to current conditions):**
+- Fed on hold (tariff inflation) => front-end stays anchored => flatteners make sense structurally
+- Term premium rising => belly-cheapening butterflies, fwd steepeners vs spot flatteners
+- Fiscal dominance / debt issuance => long-end vol elevated, right-side swaptions may be rich vs left
+- External trade shock => risk-off rally then reversal => conditional structures to capture asymmetry
+- CB easing divergence => funding basis opportunities across currencies
+NOTE: These were his priors at the TIME of those trades. Current conditions may be completely different.
+Always check what the macro environment ACTUALLY IS today before applying any of these templates.
 
 ---
 
-### PART 2: SYSTEMATIC XCCY BASIS SIGNAL -- The APM Strategy
-(From: Caxton APM Investment Strategy writeup)
+### PART 2: SYSTEMATIC XCCY BASIS FRAMEWORK (analytical lens — NOT specific trade recommendations)
+(Derived from: Caxton APM Investment Strategy writeup. Use as an analytical FRAMEWORK
+for understanding what drives xccy basis moves. The specific signals and trades below
+are illustrative of the methodology — apply the LOGIC to current conditions, not the trades.)
 
 **Core Concept:**
 Cross-currency basis = deviation from Covered Interest Parity. Premium to borrow USD vs FX.
@@ -154,11 +166,14 @@ Pay-basis positions (long USD funding demand) generally carry negatively.
 - Level-neutral (RV) strategy: long/short basis pairs where z-scores diverge
 - Rebalance every 21 trading days
 
-**Recent Confirmed Signals (from trade log, for calibration):**
-- Receive 30Y SONIA/SOFR: UK selloff beta to Germany set to retrace: +15.7bp
-- Receive 3Mx10Y TONAR/SOFR: JPY basis not reflecting USD funding stress + Japan tariff: +6.9bp
-- 1y1y/1y10y ESTR/SOFR xccy basis curve flatteners: German fiscal widens intermediates; ECB B/S tightening vs Fed: +3.9bp
-- Pay 2Y SONIA/SOFR: diverging Fed/BOE paths; basis negatively correlated to BOE reserves; UK QT + BOE easing: +1.9bp
+**Past Signal Examples (for understanding the methodology ONLY — do NOT recommend these specific trades):**
+These illustrate what good signal-to-trade mapping looks like. Note the structure:
+a macro catalyst → identified via z-score driver → mapped to a specific basis pair + tenor.
+- SONIA/SOFR 30Y: UK selloff beta to Germany → retracement thesis → receive basis
+- TONAR/SOFR 10Y: JPY basis underpricing USD funding stress + Japan tariff impact → receive basis
+- ESTR/SOFR 1y1y/1y10y: German fiscal widens intermediates; ECB B/S tightening vs Fed → curve flattener
+- SONIA/SOFR 2Y: diverging Fed/BOE paths; basis correlated to BOE reserves → pay basis
+The KEY is the reasoning chain, not the specific trade. Apply this same chain to CURRENT conditions.
 
 **Risk Controls:**
 - Diversify across currencies (reduces single-pair funding stress risk)
@@ -170,38 +185,44 @@ Pay-basis positions (long USD funding demand) generally carry negatively.
 
 ### HOW TO APPLY THIS FRAMEWORK IN EVERY BRIEFING:
 
+REMEMBER: You are generating ORIGINAL analysis, not recycling his trade log. He already knows his
+own trades. Your value-add is connecting today's specific data/news to his thinking frameworks in
+ways he might not have considered yet.
+
 **For "Systematic Signal Context" section:**
-- Run the z-score logic mentally: which CB B/S is expanding vs contracting?
+- Apply the z-score driver framework: which CB B/S is expanding vs contracting RIGHT NOW?
 - Which equity index is outperforming (basis tightener for that currency)?
 - Is swaption vol elevated (basis tightener)? Is the swap curve steep (tightener at 10Y)?
 - Are SOFR Reds/Greens pricing easing (basis tightener for 2Y)?
-- Identify: which xccy pairs are dislocated? Is the 2Y or 10Y sector more interesting?
+- Identify: which xccy pairs look dislocated BASED ON TODAY'S DATA? Is the 2Y or 10Y sector more interesting?
 - Flag quarter/year-end seasonal pressures or Yankee issuance dynamics
+- DO NOT simply repeat the APM signal examples above — run the LOGIC fresh on current conditions
 
 **For "Trade Construction Context" section:**
+- Generate FRESH trade ideas driven by today's specific macro environment
 - Always think: what is the carry? What is the RV relationship? What is the directional macro view?
 - Use conditional structures when vol is cheap (midcurve payers/receivers, payer ratios)
 - Weight trades explicitly (e.g. 0.75:1.0 weighted, risk-neutral)
-- Cite the mean-reversion logic: "X bp cheap/rich vs 3M historical relationship"
-- For SOFR futures: check which contracts are PCA cheap/rich in Reds/Greens/Blues
-- For xccy basis: which composite z-score is most extreme? 2Y or 10Y? Which currency?
-- For vol: which expiry-tail is dislocated? Left vs right side of the surface?
-- For curve: what is the carry+roll over 3M? Is it positive?
+- Cite mean-reversion logic where applicable: "X bp cheap/rich vs 3M historical relationship"
+- DO NOT re-suggest trades from his log — he has already put those on or taken them off
+- The specific contract months, weights, and structures in Part 1 are EXAMPLES of the format he
+  likes, not trades to recommend. Generate new ones using the same format and rigor.
 
-**Trade Structures Arjun PREFERS (use these archetypes):**
-- Butterflies (curve, SOFR futures, real yields): specify weights, direction, rationale
-- Conditional structures via midcurve options: specify expiry, underlying, 1x1 or 1x2
+**Trade ARCHETYPES Arjun thinks in (use the STYLE, not the specific trades):**
+- Butterflies (curve, SOFR futures, real yields): always specify weights, direction, rationale
+- Conditional structures via midcurve options: always specify expiry, underlying, 1x1 or 1x2
 - Forward-starting swaps: pay/receive Yx1Y, Yx3Y combinations
-- SOFR futures calendar spreads: ZX/ZY flatteners/steepeners with specific rationale
-- Xccy basis curve RV: 1Y1Y / 1Y10Y basis flatteners/steepeners
+- SOFR futures calendar spreads: with specific rationale tied to today's pricing
+- Xccy basis curve RV: identify dislocated pairs from current z-score logic
 - Vol surface RV: sell expensive expiry-tail vs buy cheap expiry-tail (vega-neutral)
-- Real yield trades: 2y3y, 5y5y/10y10y carry efficient expressions
+- Real yield trades: carry efficient expressions
 
 **Trade Structures to AVOID unless specifically justified:**
 - Naked outright duration (too much carry cost, hard to size)
 - Simple pay/receive fixed without a structural RV or cross-asset story
 - Vague "buy protection" or "go long vol" without specifying the exact surface location
 - Overcrowded consensus trades without a differentiated entry angle
+- LITERALLY COPYING trades from the examples above — those are dated context, not recommendations
 """
 
 
@@ -266,7 +287,7 @@ def load_knowledge_base() -> str:
     if not notes:
         return ""
     return (
-        "\n## Knowledge Base (from your uploaded documents -- apply to all sections)\n\n"
+        "\n## Knowledge Base (from uploaded documents — use as analytical CONTEXT, not as trade recommendations)\n\n"
         + "\n\n".join(notes)
         + "\n"
     )
@@ -357,7 +378,9 @@ Write in a direct, analytical style -- like an internal morning note at a top ma
 
 CRITICAL: FX and rates must receive EQUAL emphasis throughout. Cross-currency basis is a first-class section, not an afterthought.
 
-Apply Arjun's framework above to every section. For systematic signal context, run the z-score logic. For trade construction, use his preferred archetypes with explicit weights and rationale.
+Apply Arjun's THINKING FRAMEWORKS above to every section — but generate ORIGINAL analysis driven by today's data.
+For systematic signal context, run the z-score logic on CURRENT conditions. For trade construction, generate FRESH
+trade ideas using the same analytical rigor and structure format he prefers — do NOT recycle specific trades from his log.
 
 ---
 
@@ -421,23 +444,29 @@ Also flag: any PCA cheapness/richness on SOFR curve? Mean-reversion setups in sw
 [Data releases today/this week with consensus vs prior. CB speakers and hawkish/dovish bias. Treasury auctions (size, sector, recent tail/stop-through history). FOMC/ECB/BOE/BOJ meeting dates and current market pricing. Geopolitical events with market impact.]
 
 ## Trade Construction Context
-[2-3 illustrative trade frameworks built FROM TODAY'S DATA using Arjun's preferred archetypes.
+[2-3 ORIGINAL trade frameworks generated from TODAY'S specific data and news.
+These must be NEW ideas driven by current conditions — NOT trades recycled from Arjun's historical log.
+He already knows his own trades. Your value is fresh synthesis he hasn't considered yet.
+
+Use the same FORMAT and RIGOR as his archetypes (butterflies, conditional structures, basis RV, etc.)
+but the specific trade must be motivated by something in today's news/data.
 
 For each trade, ALWAYS include ALL of:
 - Exact structure: instrument type, expiry, tenor, direction (pay/receive/long/short/payer/receiver), and risk weights if a spread/fly
-- Rationale: the specific macro or RV driver TODAY that makes this interesting
+- Rationale: the specific macro or RV driver TODAY that makes this interesting — cite the news item
 - Carry/roll: estimated bp of 3M carry+roll (positive preferred)
 - Entry logic: what level or z-score makes this an attractive entry right now
 - Risk: what scenario invalidates the trade
 
-Preferred structures to consider:
+Archetype categories to draw from (match to current conditions):
 - SOFR futures curve trade if Reds/Greens/Blues show PCA dislocation
 - Xccy basis trade if composite z-score is extreme (specify currency, tenor, direction)
 - Conditional structure (midcurve payer/receiver, payer ratio) if vol is cheap and direction is clear
 - Butterfly (rates curve, real yields) if term premium narrative is active
 - Vol surface RV if left/right side dislocation visible
 
-NEVER: naked duration, vague direction, unweighted spreads, or consensus crowded trades without a differentiated angle.]
+NEVER: naked duration, vague direction, unweighted spreads, consensus crowded trades without a differentiated angle,
+or trades copied from Arjun's historical trade log above.]
 
 ## Quality Standards
 - Source every market claim from the live news above

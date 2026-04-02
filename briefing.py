@@ -275,26 +275,38 @@ def load_knowledge_base() -> str:
     kb_dir = Path(__file__).parent / "data" / "knowledge"
     if not kb_dir.exists():
         return ""
-    notes = []
+    guides, tactical = [], []
     for f in sorted(kb_dir.glob("*.json")):
         try:
             with open(f) as fp:
                 doc = json.load(fp)
             if doc.get("active", True) and doc.get("summary"):
-                notes.append(f"### {doc.get('title', f.stem)}\n{doc['summary']}")
+                entry = f"### {doc.get('title', f.stem)}\n{doc['summary']}"
+                if doc.get("doc_type") == "tactical":
+                    tactical.append(entry)
+                else:
+                    guides.append(entry)
         except Exception:
             continue
-    if not notes:
+    if not guides and not tactical:
         return ""
-    return (
-        "\n## Knowledge Base (from uploaded documents)\n"
-        "IMPORTANT: Most uploaded docs are research reports, outlooks, or strategy papers — NOT live trade ideas.\n"
-        "Specific trades, levels, and forecasts in these docs are likely STALE and from the time of publication.\n"
-        "Extract the ANALYTICAL FRAMEWORKS, macro narratives, and reasoning patterns — then apply them to\n"
-        "CURRENT market conditions using today's news. Do NOT parrot dated trade recommendations from these docs.\n\n"
-        + "\n\n".join(notes)
-        + "\n"
-    )
+    parts = ["\n## Knowledge Base (from uploaded documents)\n"]
+    if guides:
+        parts.append(
+            "### Research & Outlook Documents\n"
+            "These are research reports, market outlooks, and strategy papers. They provide valuable "
+            "analytical frameworks, macro narratives, and structural thinking. Specific trade ideas "
+            "or levels within them reflect conditions at the time of publication — use the REASONING "
+            "and FRAMEWORKS to inform your analysis, then apply them to current market conditions.\n\n"
+            + "\n\n".join(guides)
+        )
+    if tactical:
+        parts.append(
+            "### Tactical / Live Context\n"
+            "These are time-sensitive documents with current positioning or live trade context.\n\n"
+            + "\n\n".join(tactical)
+        )
+    return "\n".join(parts) + "\n"
 
 
 def load_feedback_summary() -> str:

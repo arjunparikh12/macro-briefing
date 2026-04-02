@@ -267,7 +267,7 @@ def list_briefings():
 _gen_lock = threading.Lock()  # only one generation at a time
 
 @app.route("/api/generate", methods=["GET"])
-@login_required
+@admin_required
 def api_generate():
     if PAUSE_FILE.exists():
         def paused():
@@ -348,7 +348,7 @@ def api_briefing(filename):
     return jsonify({"content": path.read_text()})
 
 @app.route("/api/delete-today", methods=["POST"])
-@login_required
+@admin_required
 def api_delete_today():
     today = date.today().strftime("%Y-%m-%d")
     path = BRIEFINGS_DIR / f"macro-briefing-{today}.md"
@@ -380,7 +380,7 @@ def api_get_feedback():
     return jsonify(load_feedback().get(date_key, []))
 
 @app.route("/api/feedback", methods=["POST"])
-@login_required
+@admin_required
 def api_save_feedback():
     body = request.json
     filename = body.get("filename", "")
@@ -437,6 +437,7 @@ def extract_text_from_file(filepath: Path) -> str:
         return f"[Text extraction error: {e}]"
 
 def summarize_document(title: str, raw_text: str) -> str:
+    """Summarize and auto-classify a document. Returns (summary, doc_type)."""
     from anthropic import Anthropic
     haiku_client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
     resp = haiku_client.messages.create(
@@ -447,27 +448,35 @@ def summarize_document(title: str, raw_text: str) -> str:
             "content": (
                 "You are summarizing a document for use in a daily macro briefing system "
                 "used by a QIS structurer focused on rates, FX, and cross-currency basis.\n\n"
-                "FIRST, classify this document:\n"
-                "- GUIDE/OUTLOOK: a research report, market outlook, strategy paper, or framework document. "
-                "These contain thematic views, structural analyses, or medium-term forecasts that may become "
-                "stale over time. Specific trade ideas or levels in these docs are DATED and should NOT be "
-                "treated as current recommendations.\n"
-                "- TACTICAL: a live trade blotter, real-time positioning sheet, or same-day market commentary.\n\n"
-                "Start your output with: [DOCUMENT TYPE: GUIDE/OUTLOOK] or [DOCUMENT TYPE: TACTICAL]\n\n"
+                "FIRST, classify this document into one of two types:\n"
+                "- GUIDE: a research report, market outlook, strategy paper, or framework document. "
+                "These contain thematic views, structural analyses, or medium/long-term forecasts. "
+                "Specific trade ideas or levels may exist but should be understood as context from "
+                "the time of publication, not as current recommendations.\n"
+                "- TACTICAL: a live trade blotter, real-time positioning sheet, or same-day market commentary "
+                "with time-sensitive information meant to be acted on immediately.\n\n"
+                "Start your output with EXACTLY one of these two lines:\n"
+                "[DOCUMENT TYPE: GUIDE]\n"
+                "[DOCUMENT TYPE: TACTICAL]\n\n"
                 "Then output a concise structured note (300-500 words) covering:\n"
                 "- Core thesis, macro narrative, or analytical framework\n"
                 "- Key variables and signals to monitor (that remain relevant over time)\n"
-                "- Analytical FRAMEWORKS or reasoning patterns described (NOT specific dated trade recommendations)\n"
+                "- Analytical frameworks or reasoning patterns described\n"
                 "- Any quantitative rules, thresholds, or z-score logic\n"
-                "- If GUIDE/OUTLOOK: explicitly note that specific levels, trades, and forecasts in this doc "
-                "are from the time of publication and may be stale — extract the THINKING, not the trades\n"
-                "- How the analytical lens in this document should inform CURRENT daily briefing preparation\n\n"
+                "- If GUIDE: note that specific levels and trades are from the time of publication — "
+                "focus on extracting the thinking and frameworks, not the specific trade ideas\n"
+                "- How the analytical lens in this document should inform daily briefing preparation\n\n"
                 f"Document title: {title}\n\n"
                 f"Document content:\n{raw_text[:9000]}"
             )
         }]
     )
-    return resp.content[0].text
+    summary_text = resp.content[0].text
+    # Parse doc_type from first line
+    doc_type = "guide"  # default
+    if summary_text.strip().startswith("[DOCUMENT TYPE: TACTICAL]"):
+        doc_type = "tactical"
+    return summary_text, doc_type
 
 def list_documents() -> list:
     docs = []
@@ -481,6 +490,7 @@ def list_documents() -> list:
                 "filename": doc["filename"],
                 "uploaded_at": doc["uploaded_at"],
                 "active": doc.get("active", True),
+                "doc_type": doc.get("doc_type", "guide"),
             })
         except Exception:
             continue
@@ -508,13 +518,14 @@ def api_upload():
             return jsonify({"error": "Could not extract text from file"}), 422
         title = Path(f.filename).stem.replace("_", " ").replace("-", " ")
         print(f"[upload] Extracted {len(raw_text)} chars from '{title}', calling Haiku...")
-        summary = summarize_document(title, raw_text)
-        print(f"[upload] Haiku summary done ({len(summary)} chars)")
+        summary, doc_type = summarize_document(title, raw_text)
+        print(f"[upload] Haiku summary done ({len(summary)} chars), type={doc_type}")
         doc_record = {
             "id": doc_id,
             "title": title,
             "filename": safe_name,
             "summary": summary,
+            "doc_type": doc_type,
             "uploaded_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
             "active": True,
         }
@@ -523,6 +534,7 @@ def api_upload():
         return jsonify({"ok": True, "doc": {
             "id": doc_id, "title": title, "filename": safe_name,
             "uploaded_at": doc_record["uploaded_at"], "active": True,
+            "doc_type": doc_type,
         }})
     except Exception as e:
         import traceback
@@ -550,6 +562,23 @@ def api_toggle_document(doc_id):
     doc["active"] = not doc.get("active", True)
     kb_file.write_text(json.dumps(doc, indent=2))
     return jsonify({"ok": True, "active": doc["active"]})
+
+@app.route("/api/documents/<doc_id>/type", methods=["POST"])
+@admin_required
+def api_set_doc_type(doc_id):
+    if not re.match(r"^[a-f0-9]{8}$", doc_id):
+        return jsonify({"error": "Invalid id"}), 400
+    kb_file = KNOWLEDGE_DIR / f"{doc_id}.json"
+    if not kb_file.exists():
+        return jsonify({"error": "Not found"}), 404
+    new_type = (request.json or {}).get("doc_type", "guide")
+    if new_type not in ("guide", "tactical"):
+        return jsonify({"error": "Must be 'guide' or 'tactical'"}), 400
+    with open(kb_file) as fp:
+        doc = json.load(fp)
+    doc["doc_type"] = new_type
+    kb_file.write_text(json.dumps(doc, indent=2))
+    return jsonify({"ok": True, "doc_type": new_type})
 
 @app.route("/api/documents/<doc_id>/delete", methods=["POST"])
 @admin_required
@@ -815,6 +844,10 @@ HTML = r"""<!DOCTYPE html>
                  cursor: pointer; border: none; transition: all 0.15s; }
   .toggle-pill.active   { background: rgba(76,175,110,0.15); color: var(--green); }
   .toggle-pill.inactive { background: rgba(200,169,110,0.1); color: var(--muted); }
+  .doc-type-pill { padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: 600;
+                   cursor: pointer; border: none; transition: all 0.15s; }
+  .doc-type-guide    { background: rgba(100,149,237,0.15); color: #6495ed; }
+  .doc-type-tactical { background: rgba(255,165,0,0.15); color: #ffa500; }
   .doc-delete { background: none; border: 1px solid var(--border); border-radius: 5px;
                 padding: 3px 9px; cursor: pointer; font-size: 12px; color: var(--muted);
                 transition: all 0.15s; }
@@ -918,7 +951,7 @@ HTML = r"""<!DOCTYPE html>
       <div class="card-title">Today's Status</div>
       <div class="row" id="status-row"><div class="spinner"></div></div>
     </div>
-    <div class="card">
+    <div class="card admin-only">
       <div class="card-title">Generate Briefing</div>
       <div class="generate-area">
         <button id="gen-btn" class="btn btn-primary btn-large" onclick="generateBriefing()">
@@ -937,7 +970,7 @@ HTML = r"""<!DOCTYPE html>
       </div>
       <div id="briefing-content" class="briefing-content"></div>
     </div>
-    <div id="feedback-card" class="feedback-card" style="display:none">
+    <div id="feedback-card" class="feedback-card admin-only" style="display:none">
       <div class="feedback-card-title">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
         Trade Feedback — help improve future briefings
@@ -1060,7 +1093,7 @@ HTML = r"""<!DOCTYPE html>
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
       History
     </button>
-    <button class="tab-btn" id="tab-settings" onclick="showSection('settings')">
+    <button class="tab-btn admin-only" id="tab-settings" onclick="showSection('settings')">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M12 2v2m0 16v2M4.22 4.22l1.42 1.42m12.72 12.72l1.42 1.42M2 12h2m16 0h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
       Settings
     </button>
@@ -1179,24 +1212,25 @@ function appendLog(box, text, type) {
 
 async function loadBriefing(filename) {
   currentBriefingFile = filename;
-  const [briefingResp, feedbackResp] = await Promise.all([
-    fetch(`/api/briefing/${filename}`),
-    fetch(`/api/feedback?filename=${filename}`)
-  ]);
+  const briefingResp = await fetch(`/api/briefing/${filename}`);
   if (!briefingResp.ok) return;
   const data = await briefingResp.json();
-  const allFeedback = feedbackResp.ok ? await feedbackResp.json() : [];
-  const sectionRatings = {};
-  for (const entry of allFeedback) {
-    if (entry.section) {
-      sectionRatings[entry.section] = { rating: entry.rating, note: entry.note || '' };
+  let allFeedback = [];
+  let sectionRatings = {};
+  if (isAdmin) {
+    const feedbackResp = await fetch(`/api/feedback?filename=${filename}`);
+    allFeedback = feedbackResp.ok ? await feedbackResp.json() : [];
+    for (const entry of allFeedback) {
+      if (entry.section) {
+        sectionRatings[entry.section] = { rating: entry.rating, note: entry.note || '' };
+      }
     }
   }
   const dateStr = filename.replace('macro-briefing-', '').replace('.md', '');
   document.getElementById('briefing-card-title').textContent = `Briefing — ${dateStr}`;
   document.getElementById('briefing-content').innerHTML = renderMarkdown(data.content, sectionRatings);
   document.getElementById('briefing-card').style.display = 'block';
-  await renderFeedback(filename, data.content, allFeedback);
+  if (isAdmin) await renderFeedback(filename, data.content, allFeedback);
 }
 
 function renderMarkdown(md, sectionRatings) {
@@ -1206,6 +1240,7 @@ function renderMarkdown(md, sectionRatings) {
     .replace(/^# (.+)$/gm, '<h1>$1</h1>')
     .replace(/^## (.+)$/gm, (match, title) => {
       const key = title.trim();
+      if (!isAdmin) return `<h2>${key}</h2>`;
       const saved = sectionRatings[key] || {};
       const upCls   = saved.rating === 'up'   ? 'sf-up'   : '';
       const downCls = saved.rating === 'down' ? 'sf-down' : '';
@@ -1290,6 +1325,9 @@ async function loadDocuments() {
       <span class="doc-name">${d.title}</span>
       <span class="doc-date">${d.uploaded_at}</span>
       <div class="doc-actions">
+        <button class="doc-type-pill ${d.doc_type === 'tactical' ? 'doc-type-tactical' : 'doc-type-guide'}"
+          onclick="toggleDocType('${d.id}', this)"
+          title="Click to switch between Guide and Tactical">${d.doc_type === 'tactical' ? 'Tactical' : 'Guide'}</button>
         <button class="toggle-pill ${d.active ? 'active' : 'inactive'}"
           onclick="toggleDocument('${d.id}', this)">${d.active ? 'Active' : 'Off'}</button>
         <button class="doc-delete" onclick="deleteDocument('${d.id}')">✕</button>
@@ -1339,6 +1377,20 @@ async function deleteDocument(docId) {
   if (!confirm('Remove this document from the knowledge base?')) return;
   const r = await fetch(`/api/documents/${docId}/delete`, { method: 'POST' });
   if (r.ok) { await loadDocuments(); }
+}
+
+async function toggleDocType(docId, btn) {
+  const current = btn.textContent.trim().toLowerCase();
+  const newType = current === 'guide' ? 'tactical' : 'guide';
+  const r = await fetch(`/api/documents/${docId}/type`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({doc_type: newType})
+  });
+  if (!r.ok) return;
+  const data = await r.json();
+  btn.textContent = data.doc_type === 'tactical' ? 'Tactical' : 'Guide';
+  btn.className = `doc-type-pill ${data.doc_type === 'tactical' ? 'doc-type-tactical' : 'doc-type-guide'}`;
 }
 
 // ── User management ──

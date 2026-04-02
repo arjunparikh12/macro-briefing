@@ -37,6 +37,7 @@ USERS_FILE     = DATA_DIR / "users.json"
 INVITES_FILE   = DATA_DIR / "invites.json"
 DATA_DIR.mkdir(exist_ok=True)
 BRIEFINGS_DIR.mkdir(exist_ok=True)
+KNOWLEDGE_DIR.mkdir(parents=True, exist_ok=True)
 KNOWLEDGE_DIR.mkdir(exist_ok=True)
 
 # ── Auth ───────────────────────────────────────────────────────────────────────
@@ -491,12 +492,15 @@ def api_upload():
     doc_id = str(uuid.uuid4())[:8]
     tmp_path = DATA_DIR / f"tmp_{doc_id}{suffix}"
     try:
+        KNOWLEDGE_DIR.mkdir(parents=True, exist_ok=True)
         f.save(str(tmp_path))
         raw_text = extract_text_from_file(tmp_path)
         if not raw_text.strip():
             return jsonify({"error": "Could not extract text from file"}), 422
         title = Path(f.filename).stem.replace("_", " ").replace("-", " ")
+        print(f"[upload] Extracted {len(raw_text)} chars from '{title}', calling Haiku...")
         summary = summarize_document(title, raw_text)
+        print(f"[upload] Haiku summary done ({len(summary)} chars)")
         doc_record = {
             "id": doc_id,
             "title": title,
@@ -512,6 +516,8 @@ def api_upload():
             "uploaded_at": doc_record["uploaded_at"], "active": True,
         }})
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return jsonify({"error": str(e)}), 500
     finally:
         if tmp_path.exists():

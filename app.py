@@ -436,8 +436,10 @@ def extract_text_from_file(filepath: Path) -> str:
     except Exception as e:
         return f"[Text extraction error: {e}]"
 
+DOC_TYPES = {"tactical", "guide", "reference"}
+
 def summarize_document(title: str, raw_text: str) -> str:
-    """Summarize and auto-classify a document. Returns (summary, doc_type)."""
+    """Summarize a document for knowledge base injection."""
     from anthropic import Anthropic
     haiku_client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
     resp = haiku_client.messages.create(
@@ -448,35 +450,18 @@ def summarize_document(title: str, raw_text: str) -> str:
             "content": (
                 "You are summarizing a document for use in a daily macro briefing system "
                 "used by a QIS structurer focused on rates, FX, and cross-currency basis.\n\n"
-                "FIRST, classify this document into one of two types:\n"
-                "- GUIDE: a research report, market outlook, strategy paper, or framework document. "
-                "These contain thematic views, structural analyses, or medium/long-term forecasts. "
-                "Specific trade ideas or levels may exist but should be understood as context from "
-                "the time of publication, not as current recommendations.\n"
-                "- TACTICAL: a live trade blotter, real-time positioning sheet, or same-day market commentary "
-                "with time-sensitive information meant to be acted on immediately.\n\n"
-                "Start your output with EXACTLY one of these two lines:\n"
-                "[DOCUMENT TYPE: GUIDE]\n"
-                "[DOCUMENT TYPE: TACTICAL]\n\n"
-                "Then output a concise structured note (300-500 words) covering:\n"
+                "Output a concise structured note (300-500 words) covering:\n"
                 "- Core thesis, macro narrative, or analytical framework\n"
-                "- Key variables and signals to monitor (that remain relevant over time)\n"
+                "- Key variables and signals to monitor\n"
                 "- Analytical frameworks or reasoning patterns described\n"
                 "- Any quantitative rules, thresholds, or z-score logic\n"
-                "- If GUIDE: note that specific levels and trades are from the time of publication — "
-                "focus on extracting the thinking and frameworks, not the specific trade ideas\n"
                 "- How the analytical lens in this document should inform daily briefing preparation\n\n"
                 f"Document title: {title}\n\n"
                 f"Document content:\n{raw_text[:9000]}"
             )
         }]
     )
-    summary_text = resp.content[0].text
-    # Parse doc_type from first line
-    doc_type = "guide"  # default
-    if summary_text.strip().startswith("[DOCUMENT TYPE: TACTICAL]"):
-        doc_type = "tactical"
-    return summary_text, doc_type
+    return resp.content[0].text
 
 def list_documents() -> list:
     docs = []
@@ -517,9 +502,12 @@ def api_upload():
         if not raw_text.strip():
             return jsonify({"error": "Could not extract text from file"}), 422
         title = Path(f.filename).stem.replace("_", " ").replace("-", " ")
-        print(f"[upload] Extracted {len(raw_text)} chars from '{title}', calling Haiku...")
-        summary, doc_type = summarize_document(title, raw_text)
-        print(f"[upload] Haiku summary done ({len(summary)} chars), type={doc_type}")
+        doc_type = request.form.get("doc_type", "guide")
+        if doc_type not in DOC_TYPES:
+            doc_type = "guide"
+        print(f"[upload] Extracted {len(raw_text)} chars from '{title}', type={doc_type}, calling Haiku...")
+        summary = summarize_document(title, raw_text)
+        print(f"[upload] Haiku summary done ({len(summary)} chars)")
         doc_record = {
             "id": doc_id,
             "title": title,
@@ -572,8 +560,8 @@ def api_set_doc_type(doc_id):
     if not kb_file.exists():
         return jsonify({"error": "Not found"}), 404
     new_type = (request.json or {}).get("doc_type", "guide")
-    if new_type not in ("guide", "tactical"):
-        return jsonify({"error": "Must be 'guide' or 'tactical'"}), 400
+    if new_type not in DOC_TYPES:
+        return jsonify({"error": "Must be 'tactical', 'guide', or 'reference'"}), 400
     with open(kb_file) as fp:
         doc = json.load(fp)
     doc["doc_type"] = new_type
@@ -844,10 +832,13 @@ HTML = r"""<!DOCTYPE html>
                  cursor: pointer; border: none; transition: all 0.15s; }
   .toggle-pill.active   { background: rgba(76,175,110,0.15); color: var(--green); }
   .toggle-pill.inactive { background: rgba(200,169,110,0.1); color: var(--muted); }
-  .doc-type-pill { padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: 600;
-                   cursor: pointer; border: none; transition: all 0.15s; }
-  .doc-type-guide    { background: rgba(100,149,237,0.15); color: #6495ed; }
-  .doc-type-tactical { background: rgba(255,165,0,0.15); color: #ffa500; }
+  .doc-type-select { padding: 3px 6px; border-radius: 6px; font-size: 11px; font-weight: 600;
+                     cursor: pointer; border: 1px solid var(--border); transition: all 0.15s;
+                     background: #0f0f0f; color: var(--text); outline: none; -webkit-appearance: auto; }
+  .doc-type-select:focus { border-color: var(--accent); }
+  .doc-type-select.dt-tactical  { color: #ffa500; border-color: rgba(255,165,0,0.3); }
+  .doc-type-select.dt-guide     { color: #6495ed; border-color: rgba(100,149,237,0.3); }
+  .doc-type-select.dt-reference { color: #a78bfa; border-color: rgba(167,139,250,0.3); }
   .doc-delete { background: none; border: 1px solid var(--border); border-radius: 5px;
                 padding: 3px 9px; cursor: pointer; font-size: 12px; color: var(--muted);
                 transition: all 0.15s; }
@@ -1016,10 +1007,22 @@ HTML = r"""<!DOCTYPE html>
       </p>
       <div id="doc-list"><div class="empty" style="padding:12px 0">No documents uploaded yet.</div></div>
       <div class="upload-area">
-        <input type="file" id="doc-upload-input" accept=".pdf,.docx,.txt" style="display:none" onchange="uploadDocument(this)">
-        <button class="btn btn-primary btn-sm" onclick="document.getElementById('doc-upload-input').click()" id="upload-btn">
-          + Upload Document
-        </button>
+        <div class="row" style="gap:8px;align-items:center;flex-wrap:wrap">
+          <select id="upload-doc-type" class="doc-type-select dt-guide" onchange="this.className='doc-type-select dt-'+this.value">
+            <option value="guide">Market Guide</option>
+            <option value="tactical">Tactical Context</option>
+            <option value="reference">Reference</option>
+          </select>
+          <input type="file" id="doc-upload-input" accept=".pdf,.docx,.txt" style="display:none" onchange="uploadDocument(this)">
+          <button class="btn btn-primary btn-sm" onclick="document.getElementById('doc-upload-input').click()" id="upload-btn">
+            + Upload Document
+          </button>
+        </div>
+        <div style="font-size:11px;color:var(--muted);margin-top:6px;line-height:1.5">
+          <strong>Tactical Context</strong> — headline news, speeches, short-term views<br>
+          <strong>Market Guide</strong> — outlooks, structural themes, longer-term macro views<br>
+          <strong>Reference</strong> — research papers, definitions, informational context
+        </div>
         <div class="upload-status" id="upload-status"></div>
       </div>
     </div>
@@ -1325,9 +1328,12 @@ async function loadDocuments() {
       <span class="doc-name">${d.title}</span>
       <span class="doc-date">${d.uploaded_at}</span>
       <div class="doc-actions">
-        <button class="doc-type-pill ${d.doc_type === 'tactical' ? 'doc-type-tactical' : 'doc-type-guide'}"
-          onclick="toggleDocType('${d.id}', this)"
-          title="Click to switch between Guide and Tactical">${d.doc_type === 'tactical' ? 'Tactical' : 'Guide'}</button>
+        <select class="doc-type-select dt-${d.doc_type || 'guide'}"
+          onchange="setDocType('${d.id}', this.value, this)">
+          <option value="guide"${d.doc_type === 'guide' || !d.doc_type ? ' selected' : ''}>Market Guide</option>
+          <option value="tactical"${d.doc_type === 'tactical' ? ' selected' : ''}>Tactical Context</option>
+          <option value="reference"${d.doc_type === 'reference' ? ' selected' : ''}>Reference</option>
+        </select>
         <button class="toggle-pill ${d.active ? 'active' : 'inactive'}"
           onclick="toggleDocument('${d.id}', this)">${d.active ? 'Active' : 'Off'}</button>
         <button class="doc-delete" onclick="deleteDocument('${d.id}')">✕</button>
@@ -1344,8 +1350,10 @@ async function uploadDocument(input) {
   status.textContent = 'Uploading and processing... (~10 seconds)';
   btn.disabled = true;
   input.value = '';
+  const docType = document.getElementById('upload-doc-type').value;
   const formData = new FormData();
   formData.append('file', file);
+  formData.append('doc_type', docType);
   try {
     const r = await fetch('/api/upload', { method: 'POST', body: formData });
     const data = await r.json();
@@ -1379,9 +1387,7 @@ async function deleteDocument(docId) {
   if (r.ok) { await loadDocuments(); }
 }
 
-async function toggleDocType(docId, btn) {
-  const current = btn.textContent.trim().toLowerCase();
-  const newType = current === 'guide' ? 'tactical' : 'guide';
+async function setDocType(docId, newType, sel) {
   const r = await fetch(`/api/documents/${docId}/type`, {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
@@ -1389,8 +1395,7 @@ async function toggleDocType(docId, btn) {
   });
   if (!r.ok) return;
   const data = await r.json();
-  btn.textContent = data.doc_type === 'tactical' ? 'Tactical' : 'Guide';
-  btn.className = `doc-type-pill ${data.doc_type === 'tactical' ? 'doc-type-tactical' : 'doc-type-guide'}`;
+  sel.className = `doc-type-select dt-${data.doc_type}`;
 }
 
 // ── User management ──

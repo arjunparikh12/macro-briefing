@@ -275,36 +275,47 @@ def load_knowledge_base() -> str:
     kb_dir = Path(__file__).parent / "data" / "knowledge"
     if not kb_dir.exists():
         return ""
-    guides, tactical = [], []
+    tactical, guides, reference = [], [], []
     for f in sorted(kb_dir.glob("*.json")):
         try:
             with open(f) as fp:
                 doc = json.load(fp)
             if doc.get("active", True) and doc.get("summary"):
-                entry = f"### {doc.get('title', f.stem)}\n{doc['summary']}"
-                if doc.get("doc_type") == "tactical":
+                entry = f"#### {doc.get('title', f.stem)}\n{doc['summary']}"
+                dt = doc.get("doc_type", "guide")
+                if dt == "tactical":
                     tactical.append(entry)
+                elif dt == "reference":
+                    reference.append(entry)
                 else:
                     guides.append(entry)
         except Exception:
             continue
-    if not guides and not tactical:
+    if not tactical and not guides and not reference:
         return ""
     parts = ["\n## Knowledge Base (from uploaded documents)\n"]
-    if guides:
-        parts.append(
-            "### Research & Outlook Documents\n"
-            "These are research reports, market outlooks, and strategy papers. They provide valuable "
-            "analytical frameworks, macro narratives, and structural thinking. Specific trade ideas "
-            "or levels within them reflect conditions at the time of publication — use the REASONING "
-            "and FRAMEWORKS to inform your analysis, then apply them to current market conditions.\n\n"
-            + "\n\n".join(guides)
-        )
     if tactical:
         parts.append(
-            "### Tactical / Live Context\n"
-            "These are time-sensitive documents with current positioning or live trade context.\n\n"
+            "### Tactical Context\n"
+            "Headline news, speeches, and short-term market commentary. Use these to inform "
+            "trade ideas, near-term views, and time-sensitive analysis in the briefing.\n\n"
             + "\n\n".join(tactical)
+        )
+    if guides:
+        parts.append(
+            "### Overarching Market Guides\n"
+            "Market outlooks, strategy papers, and structural themes. These provide the broader "
+            "macro narrative and longer-term frameworks. Use them to inform structural trade ideas "
+            "and longer-horizon macro views. Specific levels or trades within may reflect conditions "
+            "at the time of publication — focus on the analytical frameworks and reasoning.\n\n"
+            + "\n\n".join(guides)
+        )
+    if reference:
+        parts.append(
+            "### Reference Material\n"
+            "Research papers, definitions, and informational context. Embed this knowledge "
+            "wherever it is relevant across the briefing.\n\n"
+            + "\n\n".join(reference)
         )
     return "\n".join(parts) + "\n"
 

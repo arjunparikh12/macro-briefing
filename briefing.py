@@ -287,7 +287,11 @@ def load_knowledge_base() -> str:
     if not notes:
         return ""
     return (
-        "\n## Knowledge Base (from uploaded documents — use as analytical CONTEXT, not as trade recommendations)\n\n"
+        "\n## Knowledge Base (from uploaded documents)\n"
+        "IMPORTANT: Most uploaded docs are research reports, outlooks, or strategy papers — NOT live trade ideas.\n"
+        "Specific trades, levels, and forecasts in these docs are likely STALE and from the time of publication.\n"
+        "Extract the ANALYTICAL FRAMEWORKS, macro narratives, and reasoning patterns — then apply them to\n"
+        "CURRENT market conditions using today's news. Do NOT parrot dated trade recommendations from these docs.\n\n"
         + "\n\n".join(notes)
         + "\n"
     )
@@ -359,10 +363,20 @@ def load_feedback_summary() -> str:
     return "\n".join(lines)
 
 
-def build_prompt(today: str, news: str, feedback: str, knowledge: str = "") -> str:
-    return f"""You are generating a daily macro briefing for Arjun Parikh, a QIS structurer at JPMorgan.
+def build_prompt(today: str, now_str: str, news: str, feedback: str, knowledge: str = "") -> str:
+    return f"""You are generating a macro briefing for Arjun Parikh, a QIS structurer at JPMorgan.
 
 Today's date: {today}
+Current time: {now_str}
+
+TIME-AWARENESS IS CRITICAL:
+- Adjust your framing to match the ACTUAL time above. If it is evening in New York, do NOT write
+  as if it is a pre-market morning note. Frame it as an end-of-day/evening wrap or overnight preview.
+- If it is morning, write as a morning briefing looking ahead to the session.
+- If it is midday, write as a midday update with the session in progress.
+- Reference market sessions correctly: check what time it is in London, Tokyo, Sydney based on the
+  current NY time. Do NOT say "early European hours" if it is the middle of the night in London.
+- When citing news, consider WHEN it was published vs the current time. Old news is context, not breaking.
 
 {ARJUN_FRAMEWORK}
 {knowledge}
@@ -374,7 +388,16 @@ Today's date: {today}
 
 ## Briefing Instructions
 
-Write in a direct, analytical style -- like an internal morning note at a top macro hedge fund written BY Arjun FOR Arjun. Every sentence carries signal. No filler. No hedging language. No "it is worth noting that." If you do not have data, say "No data available" and move on.
+Write in a direct, analytical style -- like an internal note at a top macro hedge fund written BY Arjun FOR Arjun.
+Every sentence carries signal. No filler. No hedging language. No "it is worth noting that."
+If you do not have data, say "No data available" and move on.
+
+TAKE A CLEAR VIEW. This is the most important instruction. Do NOT sit on the fence. For every section,
+state what you think is happening and why. For every trade idea, say whether you like it or not and why.
+Arjun wants a tool that THINKS and has OPINIONS informed by the data — not one that lists possibilities
+and hedges with "on the other hand." Be direct. Be wrong sometimes. That's fine. Being vague is not.
+Synthesize ALL available context (news, framework, uploaded documents, past feedback) into a coherent
+macro narrative with conviction. If the data conflicts, say which signal you trust more and why.
 
 CRITICAL: FX and rates must receive EQUAL emphasis throughout. Cross-currency basis is a first-class section, not an afterthought.
 
@@ -384,10 +407,11 @@ trade ideas using the same analytical rigor and structure format he prefers — 
 
 ---
 
-# Daily Macro Briefing -- {today}
+# Macro Briefing -- {today} ({now_str})
 
-## Overnight Summary
-[2-3 paragraphs: key developments across rates, FX, funding markets. What moved, why, what the market is pricing. Flag any regime shifts.]
+## Market Summary
+[2-3 paragraphs: key developments across rates, FX, funding markets. What moved, why, what the market is pricing.
+Frame relative to the CURRENT TIME — what has already happened today vs what is ahead. Flag any regime shifts.]
 
 ## Central Bank Watch
 [Fed, ECB, BOE, BOJ policy state. Speeches, minutes, decisions. OIS/futures pricing for each CB. Balance sheet policy: who is doing QT, how fast, what is the net liquidity impact on xccy basis? SRP facility updates if relevant.]
@@ -483,7 +507,12 @@ def generate_briefing(stream_callback=None) -> str:
     Generate a briefing. If stream_callback is provided, calls it with each
     text chunk as it arrives. Returns the full briefing text.
     """
-    today = date.today().strftime("%Y-%m-%d")
+    from datetime import datetime as dt
+    import pytz
+    et = pytz.timezone("America/New_York")
+    now_et = dt.now(et)
+    today = now_et.strftime("%Y-%m-%d")
+    now_str = now_et.strftime("%I:%M %p ET on %A, %B %d, %Y")
 
     if stream_callback:
         stream_callback(f"Gathering live market news ({len(SEARCH_QUERIES)} searches)...\n")
@@ -495,7 +524,7 @@ def generate_briefing(stream_callback=None) -> str:
 
     feedback = load_feedback_summary()
     knowledge = load_knowledge_base()
-    prompt = build_prompt(today, news, feedback, knowledge)
+    prompt = build_prompt(today, now_str, news, feedback, knowledge)
 
     full_text = ""
     with client.messages.stream(

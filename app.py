@@ -441,18 +441,27 @@ def summarize_document(title: str, raw_text: str) -> str:
     haiku_client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
     resp = haiku_client.messages.create(
         model="claude-haiku-4-5",
-        max_tokens=700,
+        max_tokens=800,
         messages=[{
             "role": "user",
             "content": (
-                "Extract the key macro/rates/FX/xccy basis insights from this document "
-                "for use in daily macro briefings for a QIS structurer.\n\n"
-                "Output a concise structured note (300-400 words) covering:\n"
-                "- Core thesis or framework\n"
-                "- Key variables and signals to monitor\n"
-                "- Trade structures or patterns described\n"
+                "You are summarizing a document for use in a daily macro briefing system "
+                "used by a QIS structurer focused on rates, FX, and cross-currency basis.\n\n"
+                "FIRST, classify this document:\n"
+                "- GUIDE/OUTLOOK: a research report, market outlook, strategy paper, or framework document. "
+                "These contain thematic views, structural analyses, or medium-term forecasts that may become "
+                "stale over time. Specific trade ideas or levels in these docs are DATED and should NOT be "
+                "treated as current recommendations.\n"
+                "- TACTICAL: a live trade blotter, real-time positioning sheet, or same-day market commentary.\n\n"
+                "Start your output with: [DOCUMENT TYPE: GUIDE/OUTLOOK] or [DOCUMENT TYPE: TACTICAL]\n\n"
+                "Then output a concise structured note (300-500 words) covering:\n"
+                "- Core thesis, macro narrative, or analytical framework\n"
+                "- Key variables and signals to monitor (that remain relevant over time)\n"
+                "- Analytical FRAMEWORKS or reasoning patterns described (NOT specific dated trade recommendations)\n"
                 "- Any quantitative rules, thresholds, or z-score logic\n"
-                "- How this applies to daily briefing preparation\n\n"
+                "- If GUIDE/OUTLOOK: explicitly note that specific levels, trades, and forecasts in this doc "
+                "are from the time of publication and may be stale — extract the THINKING, not the trades\n"
+                "- How the analytical lens in this document should inform CURRENT daily briefing preparation\n\n"
                 f"Document title: {title}\n\n"
                 f"Document content:\n{raw_text[:9000]}"
             )

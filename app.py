@@ -33,12 +33,14 @@ BRIEFINGS_DIR  = DATA_DIR / "briefings"
 FEEDBACK_FILE  = DATA_DIR / "feedback.json"
 PAUSE_FILE     = DATA_DIR / ".paused"
 KNOWLEDGE_DIR  = DATA_DIR / "knowledge"
+CHATS_DIR      = DATA_DIR / "chats"
+INSIGHTS_FILE  = DATA_DIR / "insights.json"
 USERS_FILE     = DATA_DIR / "users.json"
 INVITES_FILE   = DATA_DIR / "invites.json"
 DATA_DIR.mkdir(exist_ok=True)
 BRIEFINGS_DIR.mkdir(exist_ok=True)
 KNOWLEDGE_DIR.mkdir(parents=True, exist_ok=True)
-KNOWLEDGE_DIR.mkdir(exist_ok=True)
+CHATS_DIR.mkdir(exist_ok=True)
 
 # ── Auth ───────────────────────────────────────────────────────────────────────
 ADMIN_PASSWORD = os.environ.get("APP_PASSWORD", "changeme")
@@ -578,6 +580,155 @@ def api_delete_document(doc_id):
         kb_file.unlink()
     return jsonify({"ok": True})
 
+# ── Chat / Q&A on briefings ───────────────────────────────────────────────────
+
+def load_chat_history(briefing_date: str) -> list:
+    chat_file = CHATS_DIR / f"{briefing_date}.json"
+    if not chat_file.exists():
+        return []
+    with open(chat_file) as f:
+        return json.load(f)
+
+def save_chat_history(briefing_date: str, messages: list):
+    chat_file = CHATS_DIR / f"{briefing_date}.json"
+    chat_file.write_text(json.dumps(messages, indent=2))
+
+def load_insights() -> list:
+    if not INSIGHTS_FILE.exists():
+        return []
+    with open(INSIGHTS_FILE) as f:
+        return json.load(f)
+
+def save_insights(insights: list):
+    INSIGHTS_FILE.write_text(json.dumps(insights, indent=2))
+
+@app.route("/api/chat/history/<briefing_date>")
+@admin_required
+def api_chat_history(briefing_date):
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", briefing_date):
+        return jsonify({"error": "Invalid date"}), 400
+    return jsonify(load_chat_history(briefing_date))
+
+@app.route("/api/chat", methods=["POST"])
+@admin_required
+def api_chat():
+    """Stream a chat response about a briefing section. Uses SSE."""
+    from anthropic import Anthropic
+    body = request.json or {}
+    briefing_date = body.get("briefing_date", "")
+    user_message = body.get("message", "").strip()
+    section_context = body.get("section_context", "")
+
+    if not user_message or not briefing_date:
+        return jsonify({"error": "Missing message or briefing_date"}), 400
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", briefing_date):
+        return jsonify({"error": "Invalid date"}), 400
+
+    # Load the briefing content
+    briefing_path = BRIEFINGS_DIR / f"macro-briefing-{briefing_date}.md"
+    briefing_content = briefing_path.read_text() if briefing_path.exists() else ""
+
+    # Load chat history for context
+    chat_history = load_chat_history(briefing_date)
+
+    # Load insights for additional context
+    insights = load_insights()
+    insights_text = ""
+    if insights:
+        insights_text = "\n\n## Saved Insights from Past Conversations\n"
+        for ins in insights[-30:]:
+            insights_text += f"- [{ins.get('date','')}] {ins.get('insight','')}\n"
+
+    # Build conversation messages
+    system_prompt = (
+        f"You are Arjun's AI macro trading assistant. You are having a conversation about "
+        f"the macro briefing for {briefing_date}.\n\n"
+        f"FULL BRIEFING:\n{briefing_content}\n\n"
+        f"{briefing_module.ARJUN_FRAMEWORK}\n"
+        f"{insights_text}\n\n"
+        f"RULES:\n"
+        f"- You wrote this briefing. Defend your ideas when they are right, but if the user "
+        f"points out a flaw in your logic, ACKNOWLEDGE IT clearly and explain what the correct "
+        f"reasoning should be.\n"
+        f"- Be specific. Use exact instruments, tenors, directions, weights.\n"
+        f"- When explaining a trade, walk through: (1) the macro thesis, (2) why this specific "
+        f"structure expresses it, (3) the carry/roll math, (4) what makes it wrong.\n"
+        f"- If you realize your original briefing had an error, say so directly.\n"
+        f"- Think like a rates/FX/xccy basis trader, not a generalist.\n"
+        f"- Be concise. No filler."
+    )
+
+    if section_context:
+        system_prompt += f"\n\nThe user is asking about this specific section:\n{section_context}"
+
+    messages = []
+    # Include recent chat history (last 20 exchanges to stay within context)
+    for msg in chat_history[-20:]:
+        messages.append({"role": msg["role"], "content": msg["content"]})
+    messages.append({"role": "user", "content": user_message})
+
+    client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+
+    def stream():
+        full_response = ""
+        try:
+            with client.messages.stream(
+                model="claude-sonnet-4-20250514",
+                max_tokens=1500,
+                system=system_prompt,
+                messages=messages,
+            ) as s:
+                for chunk in s.text_stream:
+                    full_response += chunk
+                    yield f"data: {json.dumps({'chunk': chunk})}\n\n"
+
+            # Save to chat history
+            chat_history.append({"role": "user", "content": user_message, "ts": datetime.now().strftime("%H:%M")})
+            chat_history.append({"role": "assistant", "content": full_response, "ts": datetime.now().strftime("%H:%M")})
+            save_chat_history(briefing_date, chat_history)
+
+            yield f"data: {json.dumps({'done': True})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+    return Response(stream(), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+@app.route("/api/chat/save-insight", methods=["POST"])
+@admin_required
+def api_save_insight():
+    """Save a key takeaway from a chat conversation as a permanent insight."""
+    body = request.json or {}
+    insight_text = body.get("insight", "").strip()
+    briefing_date = body.get("briefing_date", "")
+    if not insight_text:
+        return jsonify({"error": "No insight text"}), 400
+    insights = load_insights()
+    insights.append({
+        "insight": insight_text,
+        "date": briefing_date,
+        "saved_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+    })
+    # Keep last 100 insights
+    if len(insights) > 100:
+        insights = insights[-100:]
+    save_insights(insights)
+    return jsonify({"ok": True})
+
+@app.route("/api/insights", methods=["GET"])
+@admin_required
+def api_get_insights():
+    return jsonify(load_insights())
+
+@app.route("/api/insights/<int:idx>/delete", methods=["POST"])
+@admin_required
+def api_delete_insight(idx):
+    insights = load_insights()
+    if 0 <= idx < len(insights):
+        insights.pop(idx)
+        save_insights(insights)
+    return jsonify({"ok": True})
+
 # ── Scheduler (auto-generate at 6 AM ET Mon-Fri) ──────────────────────────────
 def scheduled_generate():
     if PAUSE_FILE.exists():
@@ -920,6 +1071,56 @@ HTML = r"""<!DOCTYPE html>
   @keyframes spin { to { transform: rotate(360deg); } }
   .admin-only { display: none; }
   .admin-only.visible { display: block; }
+
+  /* Chat panel */
+  .chat-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 50; }
+  .chat-overlay.open { display: block; }
+  .chat-panel { display: none; position: fixed; bottom: 0; left: 0; right: 0; z-index: 51;
+                background: var(--surface); border-top: 2px solid var(--accent);
+                max-height: 70vh; height: 70vh; flex-direction: column;
+                border-radius: 16px 16px 0 0; overflow: hidden; }
+  .chat-panel.open { display: flex; }
+  .chat-header { display: flex; align-items: center; justify-content: space-between;
+                 padding: 12px 16px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+  .chat-header-title { font-size: 12px; font-weight: 600; letter-spacing: 0.05em;
+                       text-transform: uppercase; color: var(--accent); }
+  .chat-close { background: none; border: none; color: var(--muted); cursor: pointer;
+                font-size: 18px; padding: 4px 8px; }
+  .chat-close:hover { color: var(--text); }
+  .chat-context { font-size: 11px; color: var(--muted); padding: 8px 16px;
+                  border-bottom: 1px solid var(--border); background: #0a0a0a;
+                  max-height: 60px; overflow: hidden; flex-shrink: 0; }
+  .chat-messages { flex: 1; overflow-y: auto; padding: 12px 16px; }
+  .chat-msg { margin-bottom: 12px; }
+  .chat-msg-user { text-align: right; }
+  .chat-msg-user .chat-bubble { background: rgba(200,169,110,0.15); color: var(--text);
+                                display: inline-block; padding: 8px 14px; border-radius: 12px 12px 4px 12px;
+                                max-width: 85%; text-align: left; font-size: 14px; line-height: 1.5; }
+  .chat-msg-assistant .chat-bubble { background: #1a1a1a; color: var(--text);
+                                     display: inline-block; padding: 8px 14px; border-radius: 12px 12px 12px 4px;
+                                     max-width: 85%; font-size: 14px; line-height: 1.5; }
+  .chat-msg-assistant .chat-bubble strong { color: var(--accent); }
+  .chat-msg-time { font-size: 10px; color: var(--muted); margin-top: 2px; }
+  .chat-typing { color: var(--muted); font-size: 13px; font-style: italic; padding: 4px 0; }
+  .chat-input-row { display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--border);
+                    background: var(--surface); flex-shrink: 0; }
+  .chat-input { flex: 1; background: #0d0d0d; border: 1px solid var(--border); border-radius: 8px;
+                padding: 10px 14px; color: var(--text); font-size: 14px; font-family: inherit;
+                resize: none; max-height: 100px; }
+  .chat-input:focus { outline: none; border-color: var(--accent); }
+  .chat-send { background: var(--accent); color: #000; border: none; border-radius: 8px;
+               padding: 10px 16px; font-weight: 600; cursor: pointer; font-size: 14px; white-space: nowrap; }
+  .chat-send:disabled { opacity: 0.4; cursor: not-allowed; }
+  .chat-save-insight { background: none; border: 1px solid var(--border); border-radius: 6px;
+                       padding: 3px 8px; font-size: 11px; color: var(--muted); cursor: pointer;
+                       margin-top: 4px; transition: all 0.15s; }
+  .chat-save-insight:hover { border-color: var(--green); color: var(--green); }
+  .chat-save-insight.saved { border-color: var(--green); color: var(--green); pointer-events: none; }
+  .briefing-content h2, .briefing-content h3 { cursor: pointer; position: relative; }
+  .briefing-content h2:hover, .briefing-content h3:hover { color: var(--accent); }
+  .briefing-content h2::after, .briefing-content h3::after {
+    content: '💬'; font-size: 12px; margin-left: 8px; opacity: 0; transition: opacity 0.15s; }
+  .briefing-content h2:hover::after, .briefing-content h3:hover::after { opacity: 0.6; }
 </style>
 </head>
 <body>
@@ -1103,12 +1304,30 @@ HTML = r"""<!DOCTYPE html>
   </div>
 </nav>
 
+<!-- CHAT PANEL -->
+<div class="chat-overlay" id="chat-overlay" onclick="closeChat()"></div>
+<div class="chat-panel" id="chat-panel">
+  <div class="chat-header">
+    <span class="chat-header-title">💬 Ask about this briefing</span>
+    <button class="chat-close" onclick="closeChat()">✕</button>
+  </div>
+  <div class="chat-context" id="chat-context"></div>
+  <div class="chat-messages" id="chat-messages"></div>
+  <div class="chat-input-row">
+    <textarea class="chat-input" id="chat-input" rows="1"
+      placeholder="Ask a question, challenge a trade idea, dig deeper..."
+      onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChat()}"></textarea>
+    <button class="chat-send" id="chat-send-btn" onclick="sendChat()">Send</button>
+  </div>
+</div>
+
 </div>
 <script>
 let currentSection = 'home';
 let currentBriefingFile = null;
 let statusData = null;
 let isAdmin = false;
+let chatSectionContext = '';
 
 async function initApp() {
   const r = await fetch('/api/me');
@@ -1609,6 +1828,174 @@ async function saveFeedback() {
     setTimeout(() => { savedMsg.style.display = 'none'; }, 4000);
   }
 }
+
+// ── Chat panel ──
+function openChat(sectionTitle, sectionContent) {
+  if (!isAdmin) return;
+  chatSectionContext = sectionContent || '';
+  const ctxEl = document.getElementById('chat-context');
+  if (sectionTitle) {
+    ctxEl.textContent = `Discussing: ${sectionTitle}`;
+    ctxEl.style.display = 'block';
+  } else {
+    ctxEl.style.display = 'none';
+  }
+  document.getElementById('chat-overlay').classList.add('open');
+  document.getElementById('chat-panel').classList.add('open');
+  document.getElementById('chat-input').focus();
+  loadChatHistory();
+}
+
+function closeChat() {
+  document.getElementById('chat-overlay').classList.remove('open');
+  document.getElementById('chat-panel').classList.remove('open');
+}
+
+async function loadChatHistory() {
+  if (!currentBriefingFile) return;
+  const dateStr = currentBriefingFile.replace('macro-briefing-', '').replace('.md', '');
+  const r = await fetch(`/api/chat/history/${dateStr}`);
+  if (!r.ok) return;
+  const messages = await r.json();
+  const container = document.getElementById('chat-messages');
+  container.innerHTML = '';
+  for (const msg of messages) {
+    appendChatMessage(msg.role, msg.content, msg.ts);
+  }
+  container.scrollTop = container.scrollHeight;
+}
+
+function appendChatMessage(role, content, ts) {
+  const container = document.getElementById('chat-messages');
+  const div = document.createElement('div');
+  div.className = `chat-msg chat-msg-${role}`;
+  let html = `<div class="chat-bubble">${escapeHtml(content)}</div>`;
+  if (ts) html += `<div class="chat-msg-time">${ts}</div>`;
+  if (role === 'assistant') {
+    const insightText = content.replace(/\n/g, ' ').substring(0, 300);
+    html += `<button class="chat-save-insight" onclick="saveInsight(this, \`${insightText.replace(/`/g,'\\`').replace(/\\/g,'\\\\')}\`)">💡 Save as insight</button>`;
+  }
+  div.innerHTML = html;
+  container.appendChild(div);
+  container.scrollTop = container.scrollHeight;
+}
+
+function escapeHtml(text) {
+  return text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\n/g, '<br>');
+}
+
+async function sendChat() {
+  const input = document.getElementById('chat-input');
+  const btn = document.getElementById('chat-send-btn');
+  const msg = input.value.trim();
+  if (!msg || !currentBriefingFile) return;
+  const dateStr = currentBriefingFile.replace('macro-briefing-', '').replace('.md', '');
+
+  input.value = '';
+  btn.disabled = true;
+  appendChatMessage('user', msg, new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}));
+
+  // Add typing indicator
+  const container = document.getElementById('chat-messages');
+  const typingDiv = document.createElement('div');
+  typingDiv.className = 'chat-msg chat-msg-assistant';
+  typingDiv.id = 'chat-typing';
+  typingDiv.innerHTML = '<div class="chat-typing">Thinking...</div>';
+  container.appendChild(typingDiv);
+  container.scrollTop = container.scrollHeight;
+
+  try {
+    const r = await fetch('/api/chat', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        briefing_date: dateStr,
+        message: msg,
+        section_context: chatSectionContext
+      })
+    });
+
+    const reader = r.body.getReader();
+    const decoder = new TextDecoder();
+    let fullResponse = '';
+    let buffer = '';
+
+    // Replace typing indicator with streaming bubble
+    typingDiv.innerHTML = '<div class="chat-bubble" id="chat-stream-bubble"></div>';
+    const bubble = document.getElementById('chat-stream-bubble');
+
+    while (true) {
+      const {done, value} = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, {stream: true});
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        try {
+          const data = JSON.parse(line.slice(6));
+          if (data.chunk) {
+            fullResponse += data.chunk;
+            bubble.innerHTML = escapeHtml(fullResponse);
+            container.scrollTop = container.scrollHeight;
+          }
+          if (data.done) {
+            // Replace streaming div with proper message
+            typingDiv.remove();
+            appendChatMessage('assistant', fullResponse, new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}));
+          }
+          if (data.error) {
+            typingDiv.innerHTML = `<div class="chat-bubble" style="color:var(--red)">Error: ${data.error}</div>`;
+          }
+        } catch(e) {}
+      }
+    }
+  } catch(e) {
+    const existing = document.getElementById('chat-typing');
+    if (existing) existing.innerHTML = `<div class="chat-bubble" style="color:var(--red)">Error: ${e.message}</div>`;
+  }
+  btn.disabled = false;
+  input.focus();
+}
+
+async function saveInsight(btn, text) {
+  if (!currentBriefingFile) return;
+  const dateStr = currentBriefingFile.replace('macro-briefing-', '').replace('.md', '');
+  const insight = prompt('Edit the insight before saving (or press OK to save as-is):', text);
+  if (!insight) return;
+  const r = await fetch('/api/chat/save-insight', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ insight, briefing_date: dateStr })
+  });
+  if (r.ok) {
+    btn.textContent = '✓ Saved';
+    btn.classList.add('saved');
+  }
+}
+
+// Make briefing headings clickable to open chat
+document.addEventListener('click', function(e) {
+  if (!isAdmin) return;
+  const heading = e.target.closest('.briefing-content h2, .briefing-content h3');
+  if (!heading) return;
+  // Don't trigger if clicking on section feedback controls
+  if (e.target.closest('.section-feedback-row')) return;
+  const title = heading.textContent.replace('💬','').trim();
+  // Grab the content up to the next heading of same or higher level
+  let content = '';
+  let el = heading.nextElementSibling;
+  const level = heading.tagName;
+  while (el) {
+    if (el.tagName === 'H1' || el.tagName === 'H2' || (level === 'H3' && el.tagName === 'H3')) break;
+    if (el.classList && el.classList.contains('section-feedback-row')) { el = el.nextElementSibling; continue; }
+    content += el.textContent + '\n';
+    el = el.nextElementSibling;
+  }
+  openChat(title, `## ${title}\n${content.trim()}`);
+});
 
 initApp();
 </script>

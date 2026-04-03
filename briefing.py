@@ -386,7 +386,24 @@ def load_feedback_summary() -> str:
     return "\n".join(lines)
 
 
-def build_prompt(today: str, now_str: str, news: str, feedback: str, knowledge: str = "") -> str:
+def load_insights() -> str:
+    """Load saved insights from chat conversations — these are permanent lessons learned."""
+    insights_path = os.path.join(os.path.dirname(__file__), "data", "insights.json")
+    if not os.path.exists(insights_path):
+        return ""
+    with open(insights_path) as f:
+        data = json.load(f)
+    if not data:
+        return ""
+    lines = ["\n## Lessons from Past Conversations (apply these permanently)\n"
+             "These are insights from direct Q&A sessions where Arjun corrected your reasoning "
+             "or taught you something about trade mechanics. Apply them rigorously.\n"]
+    for ins in data[-50:]:
+        lines.append(f"- [{ins.get('date', '')}] {ins.get('insight', '')}")
+    return "\n".join(lines) + "\n"
+
+
+def build_prompt(today: str, now_str: str, news: str, feedback: str, knowledge: str = "", insights: str = "") -> str:
     return f"""You are generating a macro briefing for Arjun Parikh, a QIS structurer at JPMorgan.
 
 Today's date: {today}
@@ -522,7 +539,8 @@ or trades copied from Arjun's historical trade log above.]
 - 1800-2800 words total, dense and actionable
 - FX and rates sections equal in depth
 - Cross-currency basis section is always present and always has at least one actionable observation
-{feedback}"""
+{feedback}
+{insights}"""
 
 
 def generate_briefing(stream_callback=None) -> str:
@@ -547,7 +565,8 @@ def generate_briefing(stream_callback=None) -> str:
 
     feedback = load_feedback_summary()
     knowledge = load_knowledge_base()
-    prompt = build_prompt(today, now_str, news, feedback, knowledge)
+    insights = load_insights()
+    prompt = build_prompt(today, now_str, news, feedback, knowledge, insights)
 
     full_text = ""
     with client.messages.stream(

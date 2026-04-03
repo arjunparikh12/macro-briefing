@@ -549,8 +549,10 @@ class MacroLLM:
         )
         if supp:
             parts.append(supp)
-
-        return "\n\n".join(parts)
+          
+        response = "\n\n".join(parts)
+        response = self._apply_learned_constraints(response)
+        return response
 
     # =====================================================================
     # RESPONSE TYPES — each grounded in actual content
@@ -888,6 +890,44 @@ class MacroLLM:
             )
 
         return "\n".join(notes) if notes else ""
+
+    def _apply_learned_constraints(self, response: str) -> str:
+        """
+        Enforce learned behavioral rules so the system actually adapts over time.
+        This is what turns memory into behavior change.
+        """
+        rules = self.memory.get("learned_rules", [])
+        
+        if not rules:
+            return response
+    
+        response_lower = response.lower()
+    
+        for r in rules[-50:]:  # only recent rules matter
+            rule_text = r.get("rule", "").lower()
+    
+            # === STYLE ENFORCEMENT ===
+            if "dont use generic macro language" in rule_text:
+                response = response.replace("macro environment", "specific pricing dynamics")
+    
+            if "be specific" in rule_text or "more concrete" in rule_text:
+                if "example:" not in response_lower:
+                    response += "\n\nExample: Apply this to a specific point on the curve or instrument."
+    
+            # === THINK LIKE A TRADER ===
+            if "focus on pnl" in rule_text or "pnl" in rule_text:
+                if "pnl" not in response_lower:
+                    response += "\n\n**PnL focus:** What actually drives returns here? Carry, roll, or convexity?"
+    
+            if "positioning" in rule_text:
+                if "positioning" not in response_lower:
+                    response += "\n\n**Positioning:** The move depends on how crowded this trade is."
+    
+            # === AVOID PAST MISTAKES ===
+            if "too generic" in rule_text:
+                response = response.replace("this suggests", "specifically, this implies")
+    
+        return response
 
     # =====================================================================
     # SUPPLEMENTARY CONTEXT — appended concisely

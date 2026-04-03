@@ -15,11 +15,11 @@ client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 BRAVE_API_KEY = os.environ.get("BRAVE_API_KEY", "")
 
 SEARCH_QUERIES = [
-    "federal reserve FOMC interest rates today",
-    "treasury yields yield curve today",
-    "US dollar DXY G10 currencies EUR USD today",
+    "federal reserve FOMC interest rates decision",
+    "treasury yields yield curve",
+    "US dollar DXY G10 currencies EUR USD",
     "cross currency basis SOFR ESTR SONIA TONAR",
-    "ECB BOE BOJ policy rates today",
+    "ECB BOE BOJ central bank policy rates",
     "treasury auction refunding issuance",
     "tariffs trade policy fiscal",
     "inflation CPI PPI employment GDP",
@@ -27,6 +27,32 @@ SEARCH_QUERIES = [
     "repo market SOFR funding conditions",
     "swaption volatility rates vol surface",
     "swap spreads treasury spreads",
+]
+
+# ── Trusted news sources — ONLY these domains are searched ────────────────────
+# Major financial news, general news, and central bank official sites.
+TRUSTED_DOMAINS = [
+    # Financial news
+    "bloomberg.com",
+    "reuters.com",
+    "wsj.com",
+    "ft.com",
+    # General news
+    "nytimes.com",
+    "cnn.com",
+    "foxnews.com",
+    "foxbusiness.com",
+    "washingtonpost.com",
+    # Central banks
+    "federalreserve.gov",
+    "ecb.europa.eu",
+    "bankofengland.co.uk",
+    "boj.or.jp",
+    "rba.gov.au",
+    "rbnz.govt.nz",
+    "snb.ch",
+    "bankofcanada.ca",
+    "riksbank.se",
 ]
 
 # ─── ARJUN'S TRADING FRAMEWORK ────────────────────────────────────────────────
@@ -181,10 +207,21 @@ NEVER guess or use stale information from this framework for current levels.
 """
 
 
-def brave_search(query: str, count: int = 5) -> list[dict]:
-    """Search using Brave Search API. Returns list of {title, url, description}."""
+def _build_site_filter() -> str:
+    """Build a 'site:x OR site:y' query suffix from TRUSTED_DOMAINS."""
+    return " OR ".join(f"site:{d}" for d in TRUSTED_DOMAINS)
+
+
+def brave_search(query: str, count: int = 8) -> list[dict]:
+    """Search using Brave Search API — restricted to TRUSTED_DOMAINS only.
+    Returns list of {title, url, description}."""
     if not BRAVE_API_KEY:
         return []
+
+    # Append site filter so Brave only returns results from trusted sources
+    site_filter = _build_site_filter()
+    filtered_query = f"({query}) ({site_filter})"
+
     try:
         r = requests.get(
             "https://api.search.brave.com/res/v1/web/search",
@@ -193,28 +230,35 @@ def brave_search(query: str, count: int = 5) -> list[dict]:
                 "Accept-Encoding": "gzip",
                 "X-Subscription-Token": BRAVE_API_KEY,
             },
-            params={"q": query, "count": count, "freshness": "pd"},  # past day
-            timeout=8,
+            params={"q": filtered_query, "count": count, "freshness": "pd"},
+            timeout=10,
         )
         r.raise_for_status()
         results = r.json().get("web", {}).get("results", [])
-        return [
-            {
-                "title": res.get("title", ""),
-                "url": res.get("url", ""),
-                "description": res.get("description", ""),
-            }
-            for res in results
-        ]
+
+        # Double-check: only return results whose URL matches a trusted domain
+        trusted = []
+        for res in results:
+            url = res.get("url", "").lower()
+            if any(domain in url for domain in TRUSTED_DOMAINS):
+                trusted.append({
+                    "title": res.get("title", ""),
+                    "url": res.get("url", ""),
+                    "description": res.get("description", ""),
+                })
+        return trusted
     except Exception as e:
         return [{"title": "Search error", "url": "", "description": str(e)}]
 
 
 def gather_news() -> str:
-    """Run all search queries and compile results into a text block."""
+    """Run all search queries and compile results into a text block.
+    Prepends current date to each query to anchor results to today."""
+    today_str = date.today().strftime("%B %Y")  # e.g. "April 2026"
     sections = []
     for query in SEARCH_QUERIES:
-        results = brave_search(query)
+        dated_query = f"{query} {today_str}"
+        results = brave_search(dated_query)
         if results:
             lines = [f"\n### Search: {query}"]
             for r in results:
@@ -418,6 +462,15 @@ FACTUAL ACCURACY IS THE #1 PRIORITY. Before writing anything:
   confuse framework examples with current facts.
 - Uploaded Knowledge Base documents may also contain dated levels — treat those as analytical context,
   not current data. Current data comes ONLY from the live news search results.
+
+STALE DATA WARNING — CRITICAL:
+- Your training data may contain outdated policy rate levels. DO NOT use them.
+- The ONLY source of truth for current rate levels is the live news search results above.
+- If you are unsure of a rate level, say "check Bloomberg" — do NOT fill in a number from memory.
+- Common mistake: citing Fed funds, ECB depo, or BOE rates from months ago. These change at every
+  meeting. Always verify against today's search results before stating any policy rate level.
+- Search results are restricted to: Bloomberg, Reuters, WSJ, FT, NYT, CNN, Fox, Washington Post,
+  and central bank official websites. If a data point does not appear in these sources, it is not available.
 
 Write in a direct, analytical style -- like an internal note at a top macro hedge fund written BY Arjun FOR Arjun.
 Every sentence carries signal. No filler. No hedging language. No "it is worth noting that."

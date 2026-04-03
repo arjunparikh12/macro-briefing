@@ -1228,6 +1228,15 @@ HTML = r"""<!DOCTYPE html>
       </div>
     </div>
 
+    <!-- Saved Insights (admin only) -->
+    <div class="card admin-only" id="card-insights">
+      <div class="card-title">Saved Insights</div>
+      <p style="font-size:12px;color:var(--muted);line-height:1.6;margin-bottom:14px">
+        Lessons saved from chat conversations. These are injected into every future briefing as permanent knowledge.
+      </p>
+      <div id="insights-list"><div class="empty" style="padding:12px 0">No insights saved yet.</div></div>
+    </div>
+
     <!-- User Management (admin only) -->
     <div class="card admin-only" id="card-users">
       <div class="card-title">User Access</div>
@@ -1517,8 +1526,37 @@ async function loadSettings() {
   }
   if (isAdmin) {
     await loadDocuments();
+    await loadInsightsList();
     await loadUsersAndInvites();
   }
+}
+
+async function loadInsightsList() {
+  const r = await fetch('/api/insights');
+  if (!r.ok) return;
+  const insights = await r.json();
+  const list = document.getElementById('insights-list');
+  if (!list) return;
+  if (!insights.length) {
+    list.innerHTML = '<div class="empty" style="padding:12px 0">No insights saved yet. Use the 💬 chat to discuss briefing sections, then save key takeaways.</div>';
+    return;
+  }
+  list.innerHTML = insights.map((ins, i) => `
+    <div class="doc-item">
+      <span class="doc-name" style="font-size:12px;line-height:1.5">${escapeHtmlBasic(ins.insight)}</span>
+      <span class="doc-date">${ins.date || ins.saved_at || ''}</span>
+      <button class="doc-delete" onclick="deleteInsight(${i})">✕</button>
+    </div>`).join('');
+}
+
+function escapeHtmlBasic(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+async function deleteInsight(idx) {
+  if (!confirm('Delete this insight? It will no longer be injected into future briefings.')) return;
+  const r = await fetch(`/api/insights/${idx}/delete`, { method: 'POST' });
+  if (r.ok) await loadInsightsList();
 }
 
 async function pauseBriefings() {
@@ -1961,18 +1999,26 @@ async function sendChat() {
 }
 
 async function saveInsight(btn, text) {
-  if (!currentBriefingFile) return;
+  if (!currentBriefingFile || !text) return;
+  btn.disabled = true;
+  btn.textContent = 'Saving...';
   const dateStr = currentBriefingFile.replace('macro-briefing-', '').replace('.md', '');
-  const insight = prompt('Edit the insight before saving (or press OK to save as-is):', text);
-  if (!insight) return;
-  const r = await fetch('/api/chat/save-insight', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ insight, briefing_date: dateStr })
-  });
-  if (r.ok) {
-    btn.textContent = '✓ Saved';
-    btn.classList.add('saved');
+  try {
+    const r = await fetch('/api/chat/save-insight', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ insight: text, briefing_date: dateStr })
+    });
+    if (r.ok) {
+      btn.textContent = '✓ Saved as insight';
+      btn.classList.add('saved');
+    } else {
+      btn.textContent = '✗ Failed to save';
+      btn.disabled = false;
+    }
+  } catch(e) {
+    btn.textContent = '✗ Error';
+    btn.disabled = false;
   }
 }
 

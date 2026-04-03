@@ -166,19 +166,22 @@ class MacroLLM:
         if section_ctx and len(section_ctx) > 50:
             return section_ctx
 
-        # Otherwise, search by keyword overlap
+        # Otherwise, search by meaningful keyword overlap
         sections = self._extract_sections(briefing)
-        q_words = set(question.lower().split())
+        q_words = self._meaningful_words(question)
+        if not q_words:
+            return ""
         best_score = 0
         best_section = ""
         for name, content in sections.items():
-            s_words = set(content.lower().split()[:200])
-            n_words = set(name.lower().split())
+            s_words = self._meaningful_words(" ".join(content.split()[:200]))
+            n_words = self._meaningful_words(name)
             score = len(q_words & s_words) + len(q_words & n_words) * 3
             if score > best_score:
                 best_score = score
                 best_section = f"**{name}:**\n{content}"
-        return best_section
+        # Only return if there's meaningful overlap (at least 3 meaningful words)
+        return best_section if best_score >= 3 else ""
 
     def _extract_key_claims(self, text: str) -> list:
         """Extract specific factual claims/sentences from briefing text that contain
@@ -201,6 +204,189 @@ class MacroLLM:
             if has_data or (has_direction and has_instrument):
                 claims.append(line[:300])
         return claims[:15]
+
+    # =====================================================================
+    # DOCUMENT PROCESSING — replaces Haiku API call
+    # =====================================================================
+
+    # Keywords that indicate macro-relevant content
+    _DOC_KEYWORDS = {
+        "rates": ["rate", "yield", "bond", "treasury", "gilt", "bund", "swap",
+                   "sofr", "sonia", "estr", "tonar", "libor", "ois", "duration",
+                   "convexity", "dv01", "coupon", "maturity", "curve", "steepen",
+                   "flatten", "butterfly", "belly"],
+        "fx": ["currency", "fx", "usd", "eur", "gbp", "jpy", "aud", "chf", "cad",
+               "nzd", "dxy", "dollar", "cable", "euro", "yen", "pound", "sterling",
+               "exchange rate", "ppp", "carry trade"],
+        "basis": ["xccy", "cross-currency", "basis", "cip", "covered interest",
+                   "funding", "swap line", "slr", "balance sheet", "repo"],
+        "central_banks": ["fed", "ecb", "boj", "boe", "rba", "rbnz", "snb",
+                          "fomc", "mpc", "governing council", "dot plot",
+                          "quantitative", "qe", "qt", "taper", "hike", "cut",
+                          "easing", "tightening", "hawkish", "dovish", "neutral"],
+        "macro": ["gdp", "inflation", "cpi", "pce", "ppi", "employment", "nfp",
+                   "payrolls", "pmi", "ism", "retail sales", "housing", "recession",
+                   "growth", "deficit", "fiscal", "tariff", "trade war", "stimulus"],
+        "vol": ["volatility", "vol", "swaption", "straddle", "strangle", "gamma",
+                "vega", "theta", "skew", "smile", "implied", "realized", "vix"],
+        "positioning": ["positioning", "cftc", "commitment of traders", "flow",
+                        "allocation", "overweight", "underweight", "crowded"],
+    }
+
+    def summarize_document(self, title: str, raw_text: str) -> str:
+        """Process a document for the knowledge base — NO API call.
+
+        Extracts structured macro-relevant content via deterministic parsing:
+        - Key claims with numbers, levels, rates
+        - Macro themes and signals
+        - Analytical frameworks and reasoning patterns
+        - Directional views and trade ideas
+        """
+        lines = []
+        title_lower = title.lower()
+
+        # 1. Identify which macro themes this document covers
+        text_lower = raw_text.lower()
+        themes_found = []
+        for theme, keywords in self._DOC_KEYWORDS.items():
+            hits = sum(1 for kw in keywords if kw in text_lower)
+            if hits >= 2:
+                themes_found.append((hits, theme))
+        themes_found.sort(key=lambda x: -x[0])
+        theme_names = [t[1] for t in themes_found[:5]]
+
+        if theme_names:
+            lines.append(f"Themes: {', '.join(theme_names)}")
+
+        # 2. Extract key claims — sentences with numbers, levels, directions
+        claims = self._extract_doc_claims(raw_text)
+        if claims:
+            lines.append("\nKey points:")
+            for c in claims:
+                lines.append(f"- {c}")
+
+        # 3. Extract analytical frameworks — sentences with "if...then",
+        #    "when...tends to", conditional/causal language
+        frameworks = self._extract_frameworks(raw_text)
+        if frameworks:
+            lines.append("\nFrameworks/rules:")
+            for f in frameworks:
+                lines.append(f"- {f}")
+
+        # 4. Extract directional views — sentences with clear market opinions
+        views = self._extract_views(raw_text)
+        if views:
+            lines.append("\nViews/conclusions:")
+            for v in views:
+                lines.append(f"- {v}")
+
+        # 5. If we got very little, just extract the most information-dense
+        #    sentences as a fallback
+        if len(lines) < 4:
+            dense = self._extract_dense_sentences(raw_text)
+            if dense:
+                lines.append("\nKey content:")
+                for d in dense:
+                    lines.append(f"- {d}")
+
+        summary = "\n".join(lines) if lines else f"Document uploaded: {title}. Content could not be automatically parsed — review manually."
+        return summary[:3000]  # Cap at 3000 chars
+
+    def _extract_doc_claims(self, text: str) -> list:
+        """Extract sentences with quantitative data or strong directional language."""
+        claims = []
+        for line in text.split("\n"):
+            line = line.strip()
+            if len(line) < 20 or len(line) > 500:
+                continue
+            if line.startswith("#") or line.startswith("•") and len(line) < 30:
+                continue
+
+            has_data = bool(re.search(r'\d+\.?\d*\s*(bp|bps|%|pct|percent)', line, re.I))
+            has_level = bool(re.search(
+                r'(\d+\.\d{1,3})\s*(%|bp|bps)?', line
+            )) and bool(re.search(
+                r'(yield|rate|spread|level|price|index|target|range|forecast)', line, re.I
+            ))
+            has_direction = bool(re.search(
+                r'(expect|forecast|project|anticipate|see|target|move to|'
+                r'will likely|should|could reach|risk of|upside|downside)',
+                line, re.I
+            ))
+
+            if has_data or has_level or (has_direction and len(line) > 40):
+                # Clean up bullet points and extra whitespace
+                clean = re.sub(r'^[\s•\-\*]+', '', line).strip()
+                if clean and clean not in claims:
+                    claims.append(clean[:300])
+
+        return claims[:20]
+
+    def _extract_frameworks(self, text: str) -> list:
+        """Extract analytical frameworks — conditional/causal reasoning patterns."""
+        frameworks = []
+        pattern = re.compile(
+            r'(if\s+.{10,80}\s*,?\s*(then|→|->|implies|leads to|causes|results in|means)|'
+            r'when\s+.{10,80}\s*,?\s*(tends? to|typically|usually|historically|generally)|'
+            r'(rule|framework|heuristic|signal|indicator|threshold|z.?score)[\s:]+.{20,})',
+            re.I
+        )
+        for line in text.split("\n"):
+            line = line.strip()
+            if len(line) < 30 or len(line) > 500:
+                continue
+            if pattern.search(line):
+                clean = re.sub(r'^[\s•\-\*]+', '', line).strip()
+                if clean and clean not in frameworks:
+                    frameworks.append(clean[:300])
+
+        return frameworks[:10]
+
+    def _extract_views(self, text: str) -> list:
+        """Extract directional views and conclusions."""
+        views = []
+        view_pattern = re.compile(
+            r'(we (expect|think|believe|see|favor|prefer|recommend|are|remain)|'
+            r'our (view|call|base case|forecast|expectation|thesis|conviction)|'
+            r'(overweight|underweight|long|short|bullish|bearish|constructive|cautious)\b|'
+            r'(conclusion|takeaway|bottom line|key risk|main risk|upshot)[\s:]+)',
+            re.I
+        )
+        for line in text.split("\n"):
+            line = line.strip()
+            if len(line) < 25 or len(line) > 500:
+                continue
+            if view_pattern.search(line):
+                clean = re.sub(r'^[\s•\-\*]+', '', line).strip()
+                if clean and clean not in views:
+                    views.append(clean[:300])
+
+        return views[:10]
+
+    def _extract_dense_sentences(self, text: str) -> list:
+        """Fallback: extract the most information-dense sentences."""
+        scored = []
+        for line in text.split("\n"):
+            line = line.strip()
+            if len(line) < 30 or len(line) > 500:
+                continue
+            if line.startswith("#"):
+                continue
+            # Score by density of macro-relevant words
+            words = line.lower().split()
+            if len(words) < 5:
+                continue
+            score = 0
+            for theme_kws in self._DOC_KEYWORDS.values():
+                score += sum(1 for kw in theme_kws if kw in line.lower())
+            # Bonus for numbers
+            score += len(re.findall(r'\d+\.?\d*', line))
+            if score > 2:
+                clean = re.sub(r'^[\s•\-\*]+', '', line).strip()
+                scored.append((score, clean[:300]))
+
+        scored.sort(key=lambda x: -x[0])
+        return [s[1] for s in scored[:15]]
 
     # =====================================================================
     # MACRO KNOWLEDGE BASE — timeless explanations for common questions
@@ -368,29 +554,33 @@ class MacroLLM:
     # =====================================================================
 
     def retrieve_similar(self, question: str, section: str = "", top_k: int = 3) -> list:
-        q_words = set(question.lower().split())
+        q_words = self._meaningful_words(question)
+        if not q_words:
+            return []
         results = []
         for interaction in self.memory.get("interactions", []):
             if interaction.get("feedback") == "bad":
                 continue
-            i_words = set(interaction.get("question", "").lower().split())
+            i_words = self._meaningful_words(interaction.get("question", ""))
             score = len(q_words & i_words)
             if section and interaction.get("section", "") == section:
                 score += 2
             if interaction.get("feedback") == "good":
                 score += 1
-            if score > 2:
+            if score >= 4:  # Raised from 2
                 results.append((score, interaction))
         results.sort(key=lambda x: -x[0])
         return [r[1] for r in results[:top_k]]
 
     def retrieve_corrections(self, question: str) -> list:
-        q_words = set(question.lower().split())
+        q_words = self._meaningful_words(question)
+        if not q_words:
+            return []
         results = []
         for correction in self.memory.get("trade_corrections", []):
-            c_words = set(correction.get("question", "").lower().split())
+            c_words = self._meaningful_words(correction.get("question", ""))
             score = len(q_words & c_words)
-            if score > 2:
+            if score >= 4:  # Raised from 2
                 results.append(correction)
         return results[:2]
 
@@ -432,35 +622,65 @@ class MacroLLM:
         rules = self.memory.get("learned_rules", [])
         if not rules:
             return []
-        q_words = set(question.lower().split())
+        q_words = self._meaningful_words(question)
+        if not q_words:
+            return []
         results = []
         for rule in rules:
-            r_words = set(rule.get("rule", "").lower().split())
+            r_words = self._meaningful_words(rule.get("rule", ""))
             score = len(q_words & r_words)
             if section and rule.get("section", "") == section:
                 score += 2
             if rule.get("source") == "conversation_correction":
                 score += 1
-            if score > 2:
+            if score >= 4:  # Raised from 2
                 results.append((score, rule))
         results.sort(key=lambda x: -x[0])
         return [r[1] for r in results[:5]]
 
+    # Stopwords to exclude from relevance scoring (common words that inflate scores)
+    _STOPWORDS = frozenset([
+        "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
+        "have", "has", "had", "do", "does", "did", "will", "would", "could",
+        "should", "may", "might", "shall", "can", "need", "dare", "ought",
+        "to", "of", "in", "for", "on", "with", "at", "by", "from", "as",
+        "into", "through", "during", "before", "after", "above", "below",
+        "between", "out", "off", "over", "under", "again", "further", "then",
+        "once", "here", "there", "when", "where", "why", "how", "all", "each",
+        "every", "both", "few", "more", "most", "other", "some", "such", "no",
+        "not", "only", "own", "same", "so", "than", "too", "very", "just",
+        "about", "up", "down", "it", "its", "this", "that", "these", "those",
+        "i", "me", "my", "we", "our", "you", "your", "he", "she", "they",
+        "what", "which", "who", "whom", "and", "but", "or", "if", "because",
+        "while", "although", "however", "also", "like", "think", "know",
+        "tell", "more", "much", "many", "well", "get", "got", "make",
+    ])
+
+    def _meaningful_words(self, text: str) -> set:
+        """Extract meaningful words (no stopwords) for relevance scoring."""
+        return set(text.lower().split()) - self._STOPWORDS
+
     def _find_relevant_knowledge(self, docs: dict, question: str) -> list:
-        q_words = set(question.lower().split())
+        q_words = self._meaningful_words(question)
+        if not q_words:
+            return []
         results = []
         for doc_type, doc_list in docs.items():
             for doc in doc_list:
-                title_words = set(doc["title"].lower().split())
-                summary_words = set(doc["summary"].lower().split()[:100])
+                title_words = self._meaningful_words(doc["title"])
+                summary_words = self._meaningful_words(
+                    " ".join(doc["summary"].split()[:100])
+                )
                 score = len(q_words & title_words) * 3 + len(q_words & summary_words)
-                if score > 3:
+                if score >= 6:  # Raised from 3
                     results.append((score, doc))
         results.sort(key=lambda x: -x[0])
-        return [r[1] for r in results[:3]]
+        return [r[1] for r in results[:2]]
 
     def _find_relevant_feedback(self, entries: list, question: str, section: str) -> list:
-        q_words = set(question.lower().split())
+        q_words = self._meaningful_words(question)
+        if not q_words:
+            return []
         results = []
         for entry in entries:
             score = 0
@@ -469,25 +689,27 @@ class MacroLLM:
                 score += 5
             note = entry.get("note", "")
             if note:
-                score += len(q_words & set(note.lower().split()))
+                score += len(q_words & self._meaningful_words(note))
             trade = entry.get("trade", "")
             if trade:
-                score += len(q_words & set(trade.lower().split()))
-            if score > 2 and (entry.get("rating") or note):
+                score += len(q_words & self._meaningful_words(trade))
+            if score >= 5 and (entry.get("rating") or note):  # Raised from 2
                 results.append((score, entry))
         results.sort(key=lambda x: -x[0])
-        return [r[1] for r in results[:5]]
+        return [r[1] for r in results[:3]]
 
     def _find_relevant_insights(self, insights: list, question: str) -> list:
-        q_words = set(question.lower().split())
+        q_words = self._meaningful_words(question)
+        if not q_words:
+            return []
         results = []
         for ins in insights:
-            i_words = set(ins.get("insight", "").lower().split())
+            i_words = self._meaningful_words(ins.get("insight", ""))
             score = len(q_words & i_words)
-            if score > 2:
+            if score >= 4:  # Raised from 2
                 results.append((score, ins))
         results.sort(key=lambda x: -x[0])
-        return [r[1] for r in results[:3]]
+        return [r[1] for r in results[:2]]
 
     def _parse_chat_history(self, chat_history: list) -> list:
         """Get recent user messages from this conversation."""
@@ -549,10 +771,17 @@ class MacroLLM:
         )
         if supp:
             parts.append(supp)
-          
-        response = "\n\n".join(parts)
-        response = self._apply_learned_constraints(response)
-        return response
+
+        result = "\n\n".join(p for p in parts if p)
+
+        # Final safety net — never return empty
+        if not result or len(result.strip()) < 10:
+            result = self._honest_fallback(question)
+
+        # Apply learned behavioral constraints
+        result = self._apply_learned_constraints(result)
+
+        return result
 
     # =====================================================================
     # RESPONSE TYPES — each grounded in actual content
@@ -594,22 +823,29 @@ class MacroLLM:
         relevant = self._find_relevant_section(briefing, question, section_ctx)
         if relevant and len(relevant) > 50:
             claims = self._extract_key_claims(relevant)
-            if claims:
+            # Only include claims actually relevant to the question
+            q_words = self._meaningful_words(question)
+            relevant_claims = [c for c in claims if len(q_words & self._meaningful_words(c)) >= 2]
+            if relevant_claims:
                 lines.append("\n**What the briefing says:**")
-                for c in claims[:5]:
+                for c in relevant_claims[:5]:
                     lines.append(f"- {c}")
 
-        # If we didn't find a macro explanation, build one from context
+        # If we didn't find a macro explanation, try reasoning from content
         if not explanation:
-            lines.insert(0, self._reason_about_question(question, section_ctx, briefing))
+            reasoned = self._reason_about_question(question, section_ctx, briefing)
+            if reasoned:
+                lines.insert(0, reasoned)
 
-        # Add structural intuition
-        q = question.lower()
-        if "why" in q or "how" in q or "what" in q:
-            lines.append(self._add_structural_intuition(question))
+        # Add structural intuition (only if we have grounded content)
+        if lines:
+            intuition = self._add_structural_intuition(question)
+            if intuition:
+                lines.append(intuition)
 
+        # Final fallback
         if not lines:
-            lines.append(self._reason_about_question(question, section_ctx, briefing))
+            lines.append(self._honest_fallback(question))
 
         return "\n".join(lines)
 
@@ -766,10 +1002,17 @@ class MacroLLM:
         # Find and present the relevant briefing content
         relevant = self._find_relevant_section(briefing, question, section_ctx)
         if relevant and len(relevant) > 50:
+            # Only include claims that are actually relevant to the question
             claims = self._extract_key_claims(relevant)
-            if claims:
+            q_words = self._meaningful_words(question)
+            relevant_claims = []
+            for c in claims:
+                c_words = self._meaningful_words(c)
+                if len(q_words & c_words) >= 2:
+                    relevant_claims.append(c)
+            if relevant_claims:
                 lines.append("**From the briefing:**")
-                for c in claims[:5]:
+                for c in relevant_claims[:5]:
                     lines.append(f"- {c}")
                 lines.append("")
 
@@ -778,82 +1021,84 @@ class MacroLLM:
         if explanation:
             lines.append(explanation)
 
-        # Extract what topic the user is asking about and add analysis
-        q = question.lower()
-        signals = self.extract_signals(question)
-        active_themes = [t for t, v in signals.items() if v]
-        if active_themes and not explanation:
-            theme_analysis = self._analyze_theme(active_themes[0], relevant or section_ctx or briefing)
-            if theme_analysis:
-                lines.append(theme_analysis)
-
-        # If we still have nothing, try reasoning
+        # If we still have nothing, try reasoning from briefing content
         if not lines:
-            lines.append(self._reason_about_question(question, section_ctx, briefing))
+            reasoned = self._reason_about_question(question, section_ctx, briefing)
+            if reasoned:
+                lines.append(reasoned)
 
-        # Add structural thinking
-        intuition = self._add_structural_intuition(question)
-        if intuition:
-            lines.append(intuition)
+        # Add structural thinking (only if we already have some grounded content)
+        if lines:
+            intuition = self._add_structural_intuition(question)
+            if intuition:
+                lines.append(intuition)
+
+        # Final fallback — be honest about limitations
+        if not lines:
+            lines.append(self._honest_fallback(question))
 
         return "\n".join(lines)
-
-    def _analyze_theme(self, theme, context):
-        """Provide analysis for a given theme based on context."""
-        claims = self._extract_key_claims(context)
-        if not claims:
-            return ""
-
-        analysis_frames = {
-            "curve": "**Curve analysis:** Look at the level, slope, and curvature. "
-                     "Which sector is driving the move? Is it rate expectations or term premium?",
-            "fed": "**Fed assessment:** Key question is the reaction function — "
-                   "are they data-dependent on inflation or growth? The dot plot vs market pricing gap matters.",
-            "basis": "**Basis assessment:** Cross-currency basis reflects USD funding supply/demand. "
-                     "Quarter-end, regulatory constraints, and CB swap lines are the big drivers.",
-            "fx": "**FX framework:** Rate differentials drive short-term, current account and flows "
-                  "drive medium-term, PPP and productivity drive long-term.",
-            "vol": "**Vol assessment:** Is implied > realized? Where on the surface is the kink? "
-                   "Event risk (FOMC, data) vs structural supply/demand for hedging.",
-            "fiscal": "**Fiscal impact:** More issuance = more duration supply = term premium rises = "
-                      "long-end cheapens. Auction tails and bid-to-cover ratios signal demand.",
-            "carry": "**Carry framework:** Positive carry doesn't mean good trade — you need to "
-                     "adjust for the probability of adverse moves. Carry/vol is the right metric.",
-            "positioning": "**Positioning lens:** Extreme positioning creates fragility. "
-                          "The unwind is often faster than the buildup. Check CFTC, prime broker data.",
-        }
-        frame = analysis_frames.get(theme, "")
-        return frame
 
     # =====================================================================
     # REASONING HELPERS
     # =====================================================================
 
+    def _honest_fallback(self, question: str) -> str:
+        """When the MacroLLM doesn't have enough context to answer properly."""
+        q = question.lower()
+
+        # Check if this is a topic we at least recognize
+        signals = self.extract_signals(question)
+        known_topics = [t for t, v in signals.items() if v]
+
+        if known_topics:
+            topic_str = ", ".join(known_topics)
+            return (
+                f"I recognize this is about **{topic_str}**, but I don't have enough specific "
+                f"context in today's briefing or my knowledge base to give you a grounded answer.\n\n"
+                f"Try:\n"
+                f"- Clicking on the relevant briefing section before asking, so I can use that content\n"
+                f"- Uploading a research doc on this topic to build my knowledge\n"
+                f"- Asking me about something covered in today's briefing — I'm strongest there"
+            )
+        else:
+            return (
+                "I don't have enough context to give you a reliable answer on this. "
+                "I'd rather be upfront than guess.\n\n"
+                "I work best when:\n"
+                "- You click on a briefing section first, so I can reference that content\n"
+                "- You ask about topics covered in today's briefing\n"
+                "- You upload research docs to expand what I know\n\n"
+                "The more you interact with me and give feedback, the more I learn."
+            )
+
     def _reason_about_question(self, question, section_ctx, briefing):
         """When we don't have a canned explanation, try to reason from the content."""
         lines = []
-        q = question.lower()
 
         # Pull key claims from whatever context we have
         source = section_ctx if section_ctx else briefing
         claims = self._extract_key_claims(source)
 
         if claims:
-            lines.append("**Relevant context from the briefing:**")
-            # Filter claims to those most relevant to the question
-            q_words = set(q.split())
+            # Filter claims to those ACTUALLY relevant to the question
+            q_words = self._meaningful_words(question)
             scored = []
             for c in claims:
-                c_words = set(c.lower().split())
+                c_words = self._meaningful_words(c)
                 score = len(q_words & c_words)
                 scored.append((score, c))
             scored.sort(key=lambda x: -x[0])
-            for _, c in scored[:5]:
-                lines.append(f"- {c}")
+            # Only include claims that have real overlap (score >= 2 meaningful words)
+            relevant_claims = [(s, c) for s, c in scored if s >= 2]
+            if relevant_claims:
+                lines.append("**Relevant context from the briefing:**")
+                for _, c in relevant_claims[:5]:
+                    lines.append(f"- {c}")
 
+        # If we found nothing relevant, say so clearly
         if not lines:
-            lines.append("I don't have enough specific context in the briefing to fully answer this. "
-                          "Can you point me to the specific section or claim you're asking about?")
+            return ""  # Return empty — let the caller handle the fallback
 
         return "\n".join(lines)
 

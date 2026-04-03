@@ -432,29 +432,9 @@ def extract_text_from_file(filepath: Path) -> str:
 DOC_TYPES = {"tactical", "guide", "reference"}
 
 def summarize_document(title: str, raw_text: str) -> str:
-    """Summarize a document for knowledge base injection."""
-    from anthropic import Anthropic
-    haiku_client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-    resp = haiku_client.messages.create(
-        model="claude-haiku-4-5",
-        max_tokens=800,
-        messages=[{
-            "role": "user",
-            "content": (
-                "You are summarizing a document for use in a daily macro briefing system "
-                "used by a QIS structurer focused on rates, FX, and cross-currency basis.\n\n"
-                "Output a concise structured note (300-500 words) covering:\n"
-                "- Core thesis, macro narrative, or analytical framework\n"
-                "- Key variables and signals to monitor\n"
-                "- Analytical frameworks or reasoning patterns described\n"
-                "- Any quantitative rules, thresholds, or z-score logic\n"
-                "- How the analytical lens in this document should inform daily briefing preparation\n\n"
-                f"Document title: {title}\n\n"
-                f"Document content:\n{raw_text[:9000]}"
-            )
-        }]
-    )
-    return resp.content[0].text
+    """Summarize a document for knowledge base injection — uses MacroLLM, no API call."""
+    llm = get_macro_llm()
+    return llm.summarize_document(title, raw_text)
 
 def list_documents() -> list:
     docs = []
@@ -498,9 +478,9 @@ def api_upload():
         doc_type = request.form.get("doc_type", "guide")
         if doc_type not in DOC_TYPES:
             doc_type = "guide"
-        print(f"[upload] Extracted {len(raw_text)} chars from '{title}', type={doc_type}, calling Haiku...")
+        print(f"[upload] Extracted {len(raw_text)} chars from '{title}', type={doc_type}, processing with MacroLLM...")
         summary = summarize_document(title, raw_text)
-        print(f"[upload] Haiku summary done ({len(summary)} chars)")
+        print(f"[upload] MacroLLM summary done ({len(summary)} chars)")
         doc_record = {
             "id": doc_id,
             "title": title,
@@ -1175,8 +1155,8 @@ HTML = r"""<!DOCTYPE html>
     <div class="card admin-only" id="card-kb">
       <div class="card-title">Knowledge Base</div>
       <p style="font-size:12px;color:var(--muted);line-height:1.6;margin-bottom:14px">
-        Upload research documents (.pdf, .docx, .txt). Each is summarized <em>once</em> using a lightweight AI call,
-        then those notes are injected into every future briefing. Toggle off to exclude without deleting.
+        Upload research documents (.pdf, .docx, .txt). Each is processed <em>once</em> by the Macro LLM,
+        extracting key claims, frameworks, and views. These notes are injected into every future briefing. Toggle off to exclude without deleting.
       </p>
       <div id="doc-list"><div class="empty" style="padding:12px 0">No documents uploaded yet.</div></div>
       <div class="upload-area">
@@ -1576,7 +1556,7 @@ async function uploadDocument(input) {
   const status = document.getElementById('upload-status');
   const btn = document.getElementById('upload-btn');
   status.className = 'upload-status';
-  status.textContent = 'Uploading and processing... (~10 seconds)';
+  status.textContent = 'Uploading and processing...';
   btn.disabled = true;
   input.value = '';
   const docType = document.getElementById('upload-doc-type').value;

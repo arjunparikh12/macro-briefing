@@ -11,16 +11,17 @@ interactive chat panel. Learns from:
   - Its own conversation memory (macro_memory.json)
 
 No external LLM calls. All reasoning is deterministic + pattern-matched.
+
+DESIGN PRINCIPLE: The response must be grounded in the ACTUAL briefing content
+and the user's SPECIFIC question. Regime/cross-asset frameworks are supplementary
+context, NOT the primary output. The user is asking about what's in front of them.
 """
 
 import json
-import os
 import re
 from datetime import datetime
-from pathlib import Path
 
-DATA_DIR = Path(__file__).parent / "data"
-MEMORY_FILE = DATA_DIR / "macro_memory.json"
+import data_access as db
 
 
 class MacroLLM:
@@ -33,29 +34,14 @@ class MacroLLM:
     # =====================================================================
 
     def _load_memory(self):
-        if MEMORY_FILE.exists():
-            try:
-                with open(MEMORY_FILE) as f:
-                    return json.load(f)
-            except Exception:
-                pass
-        return {
-            "interactions": [],       # full Q&A history
-            "patterns": {},           # reinforcement counters
-            "learned_rules": [],      # extracted from feedback + insights
-            "regime_overrides": {},   # user corrections to regime detection
-            "trade_corrections": [],  # specific trade logic corrections
-        }
+        return db.load_macro_memory()
 
     def _save_memory(self):
-        DATA_DIR.mkdir(exist_ok=True)
-        # Keep memory bounded
         if len(self.memory["interactions"]) > 500:
             self.memory["interactions"] = self.memory["interactions"][-500:]
         if len(self.memory["trade_corrections"]) > 200:
             self.memory["trade_corrections"] = self.memory["trade_corrections"][-200:]
-        with open(MEMORY_FILE, "w") as f:
-            json.dump(self.memory, f, indent=2)
+        db.save_macro_memory(self.memory)
 
     def store_interaction(self, context: dict, question: str, answer: str):
         self.memory["interactions"].append({
@@ -65,21 +51,17 @@ class MacroLLM:
             "section": context.get("section", ""),
             "regime": context.get("regime", ""),
         })
-        # Auto-extract learned rules from user statements (corrections, teachings)
         self._extract_learned_rules(question, context)
         self._save_memory()
-        # Sync learnings to briefing.py-readable file after every interaction
         self._sync_learnings_to_briefing()
 
     def record_feedback(self, feedback: str):
-        """feedback = 'good' or 'bad' on the last interaction."""
         if not self.memory["interactions"]:
             return
         last = self.memory["interactions"][-1]
         last["feedback"] = feedback
         key = "useful" if feedback == "good" else "not_useful"
         self.memory["patterns"][key] = self.memory["patterns"].get(key, 0) + 1
-        # If bad feedback, store the Q&A as a correction to avoid repeating
         if feedback == "bad":
             self.memory["trade_corrections"].append({
                 "timestamp": last["timestamp"],
@@ -87,7 +69,6 @@ class MacroLLM:
                 "bad_answer": last["answer"],
                 "section": last.get("section", ""),
             })
-        # If good feedback, extract the Q&A as a positive learned rule
         if feedback == "good" and last.get("question"):
             self.memory["learned_rules"].append({
                 "timestamp": last["timestamp"],
@@ -96,15 +77,11 @@ class MacroLLM:
                 "section": last.get("section", ""),
             })
         self._save_memory()
-        # Sync learned rules to briefing-accessible file
         self._sync_learnings_to_briefing()
 
     def _extract_learned_rules(self, user_message: str, context: dict):
-        """Auto-extract factual corrections and preferences from user statements."""
         msg = user_message.lower()
         rules = self.memory.setdefault("learned_rules", [])
-
-        # Detect correction patterns — user is teaching the LLM something
         correction_markers = [
             "actually", "no,", "wrong", "incorrect", "that's not right",
             "it's actually", "the real", "should be", "is actually",
@@ -114,7 +91,6 @@ class MacroLLM:
             "the fed is", "ecb is", "boj is", "boe is",
             "rates are", "basis is", "the curve is",
         ]
-
         is_teaching = any(marker in msg for marker in correction_markers)
         if is_teaching and len(user_message) > 20:
             rules.append({
@@ -123,17 +99,12 @@ class MacroLLM:
                 "source": "conversation_correction",
                 "section": context.get("section", ""),
             })
-            # Keep bounded
             if len(rules) > 300:
                 self.memory["learned_rules"] = rules[-300:]
 
     def _sync_learnings_to_briefing(self):
-        """Write conversation learnings to a file that briefing.py can read.
-        This bridges MacroLLM memory → Claude briefing generation without any API calls."""
-        learnings_path = DATA_DIR / "macro_llm_learnings.json"
         try:
-            # Collect all learning sources
-            learnings = {
+            db.save_llm_learnings({
                 "last_synced": datetime.now().strftime("%Y-%m-%d %H:%M"),
                 "learned_rules": self.memory.get("learned_rules", [])[-100:],
                 "trade_corrections": self.memory.get("trade_corrections", [])[-50:],
@@ -143,66 +114,204 @@ class MacroLLM:
                     if i.get("feedback") == "good"
                 ][-30:],
                 "stats": self.memory.get("patterns", {}),
-            }
-            learnings_path.write_text(json.dumps(learnings, indent=2))
+            })
         except Exception:
             pass
 
     # =====================================================================
-    # LOAD APP CONTEXT — pull in everything the app knows
+    # DATA LOADERS — delegates to shared data_access module
     # =====================================================================
 
-    def _load_feedback(self) -> list:
-        """Load feedback.json entries."""
-        fb_path = DATA_DIR / "feedback.json"
-        if not fb_path.exists():
-            return []
-        try:
-            with open(fb_path) as f:
-                data = json.load(f)
-            entries = []
-            for date_key, items in sorted(data.items(), reverse=True)[:14]:
-                for item in items:
-                    item["date"] = date_key
-                    entries.append(item)
-            return entries
-        except Exception:
-            return []
+    @staticmethod
+    def _load_feedback() -> list:
+        return db.load_feedback_entries()
 
-    def _load_insights(self) -> list:
-        """Load insights.json."""
-        ins_path = DATA_DIR / "insights.json"
-        if not ins_path.exists():
-            return []
-        try:
-            with open(ins_path) as f:
-                return json.load(f)
-        except Exception:
-            return []
+    @staticmethod
+    def _load_insights() -> list:
+        return db.load_insights()
 
-    def _load_knowledge_docs(self) -> dict:
-        """Load knowledge base docs, grouped by type."""
-        kb_dir = DATA_DIR / "knowledge"
-        result = {"tactical": [], "guide": [], "reference": []}
-        if not kb_dir.exists():
-            return result
-        for f in sorted(kb_dir.glob("*.json")):
-            try:
-                with open(f) as fp:
-                    doc = json.load(fp)
-                if doc.get("active", True) and doc.get("summary"):
-                    dt = doc.get("doc_type", "guide")
-                    result.setdefault(dt, []).append({
-                        "title": doc.get("title", f.stem),
-                        "summary": doc["summary"],
-                        "doc_type": dt,
-                    })
-            except Exception:
+    @staticmethod
+    def _load_knowledge_docs() -> dict:
+        return db.load_knowledge_docs()
+
+    # =====================================================================
+    # BRIEFING CONTENT PARSING — extract what the briefing actually says
+    # =====================================================================
+
+    def _extract_sections(self, briefing: str) -> dict:
+        """Parse the briefing into named sections."""
+        sections = {}
+        current_key = "preamble"
+        current_lines = []
+        for line in briefing.split("\n"):
+            if line.startswith("## "):
+                if current_lines:
+                    sections[current_key] = "\n".join(current_lines).strip()
+                current_key = line.replace("## ", "").strip()
+                current_lines = []
+            elif line.startswith("### "):
+                if current_lines:
+                    sections[current_key] = "\n".join(current_lines).strip()
+                current_key = line.replace("### ", "").strip()
+                current_lines = []
+            else:
+                current_lines.append(line)
+        if current_lines:
+            sections[current_key] = "\n".join(current_lines).strip()
+        return sections
+
+    def _find_relevant_section(self, briefing: str, question: str, section_ctx: str) -> str:
+        """Find the section of the briefing most relevant to the question."""
+        # If section context was provided (user clicked a section), use it
+        if section_ctx and len(section_ctx) > 50:
+            return section_ctx
+
+        # Otherwise, search by keyword overlap
+        sections = self._extract_sections(briefing)
+        q_words = set(question.lower().split())
+        best_score = 0
+        best_section = ""
+        for name, content in sections.items():
+            s_words = set(content.lower().split()[:200])
+            n_words = set(name.lower().split())
+            score = len(q_words & s_words) + len(q_words & n_words) * 3
+            if score > best_score:
+                best_score = score
+                best_section = f"**{name}:**\n{content}"
+        return best_section
+
+    def _extract_key_claims(self, text: str) -> list:
+        """Extract specific factual claims/sentences from briefing text that contain
+        numbers, rates, levels, or directional language."""
+        claims = []
+        for line in text.split("\n"):
+            line = line.strip()
+            if not line or line.startswith("#"):
                 continue
-        return result
+            # Lines with numbers, bp, %, specific instruments
+            has_data = bool(re.search(r'\d+\.?\d*\s*(bp|%|bps)', line, re.I))
+            has_direction = any(w in line.lower() for w in [
+                "steepen", "flatten", "widen", "tighten", "rally", "sell-off",
+                "bid", "offered", "rich", "cheap", "outperform", "underperform",
+                "higher", "lower", "cut", "hike", "easing", "tightening",
+            ])
+            has_instrument = bool(re.search(
+                r'(2s|5s|10s|30s|2Y|5Y|10Y|30Y|EUR|USD|JPY|GBP|SOFR|ESTR|SONIA|TONAR|DXY)', line
+            ))
+            if has_data or (has_direction and has_instrument):
+                claims.append(line[:300])
+        return claims[:15]
 
     # =====================================================================
-    # SIGNAL EXTRACTION — parse the briefing + question for macro themes
+    # MACRO KNOWLEDGE BASE — timeless explanations for common questions
+    # =====================================================================
+
+    MACRO_EXPLANATIONS = {
+        # Curve dynamics
+        "belly cheap": (
+            "The belly (5Y sector) cheapens when the market prices a shallower easing "
+            "cycle because: (1) The front-end (2Y) is anchored by near-term rate expectations "
+            "— if the Fed is cutting, 2Y rates fall quickly. (2) The long-end (10Y-30Y) is "
+            "driven by term premium and supply — less sensitive to the easing path. (3) The "
+            "belly sits in between — it's sensitive to the CUMULATIVE easing path. A shallower "
+            "cycle means fewer total cuts get priced into the 3Y-7Y sector, so those rates "
+            "stay higher relative to the front-end (which prices near-term cuts) and the "
+            "long-end (which is about supply/term premium). This creates the belly-cheapening "
+            "butterfly: 2s rally, 5s lag, 10s-30s mixed → 2s/5s/10s fly pays off."
+        ),
+        "belly underperform": (
+            "Belly underperformance (5Y sector lagging 2Y and 10Y) typically happens when: "
+            "(1) The easing cycle is shallower than expected — fewer cuts get priced into the "
+            "intermediate sector. The 2Y prices the NEXT few meetings, so it moves fast on "
+            "near-term cuts. But the 5Y prices the entire path — if there are fewer cuts in "
+            "total, the 5Y doesn't benefit as much. (2) Term premium dynamics — long-end "
+            "trades on supply and structural factors, belly trades on rate expectations. "
+            "(3) Convexity: the belly has less convexity protection than the long-end, so "
+            "in a sell-off, it cheapens more per unit of duration."
+        ),
+        "bull steepen": (
+            "Bull steepening: front-end rallies (rates fall) more than the long-end. "
+            "This happens when the market prices rate cuts at the front, but the long-end "
+            "is held up by term premium, fiscal supply concerns, or inflation risk. "
+            "The 2s10s spread WIDENS because 2Y falls faster than 10Y. Classic setup: "
+            "Fed cutting into a recession while deficit spending keeps long-end yields elevated."
+        ),
+        "bear steepen": (
+            "Bear steepening: long-end sells off (rates rise) more than the front-end. "
+            "This happens when term premium rises — typically from increased Treasury supply, "
+            "fiscal concerns, or inflation scares. Front-end is anchored by the Fed's rate "
+            "path. The 2s10s WIDENS because 10Y rises faster than 2Y."
+        ),
+        "bear flatten": (
+            "Bear flattening: front-end sells off more than the long-end. "
+            "This happens when the market prices rate hikes or fewer cuts. The 2Y is most "
+            "sensitive to the near-term policy path, so it reprices higher. The long-end "
+            "doesn't move as much because the market thinks tightening will eventually slow "
+            "growth. The 2s10s NARROWS or inverts."
+        ),
+        "basis widen": (
+            "Cross-currency basis widening (more negative) means it costs MORE to borrow "
+            "USD via FX swaps. Drivers: (1) Higher USD funding demand — foreign banks need "
+            "dollars. (2) CB balance sheet contraction — less USD liquidity. (3) Quarter/year-end "
+            "stress — regulatory constraints force dealers to shrink B/S. (4) Risk-off — "
+            "everyone rushes to USD safety, driving up the premium."
+        ),
+        "basis tighten": (
+            "Cross-currency basis tightening (less negative) means USD funding stress is easing. "
+            "Drivers: (1) Fed easing / balance sheet expansion — more USD in the system. "
+            "(2) CB swap lines activated. (3) Risk-on — less demand for USD safety. "
+            "(4) SLR reform — frees dealer balance sheet for intermediation."
+        ),
+        "carry roll": (
+            "Carry+roll is the return from holding a position over time: "
+            "Carry = coupon/income minus funding cost. Roll-down = as time passes, a bond "
+            "'rolls down' the yield curve to a lower yield (higher price) if the curve is "
+            "upward-sloping. A steep curve means high roll-down. For swaps: positive carry "
+            "means the fixed rate you receive exceeds SOFR. Roll-down depends on the "
+            "forward curve shape — if fwd rates are above spot, roll is positive."
+        ),
+        "term premium": (
+            "Term premium is the extra yield investors demand to hold longer-duration bonds "
+            "instead of rolling short-term. It's NOT about rate expectations — it's about "
+            "uncertainty and risk compensation. Drivers: (1) Treasury supply — more issuance, "
+            "higher premium. (2) Inflation uncertainty. (3) Foreign demand (less → higher premium). "
+            "(4) QT/QE — balance sheet policy directly affects duration supply to the market. "
+            "Term premium rising → long-end cheapens → steepeners work."
+        ),
+        "vol surface": (
+            "The swaption vol surface has two axes: expiry (when the option expires) and "
+            "tail (the length of the underlying swap). Left-side = short expiry (1M, 3M), "
+            "Right-side = long tail (10Y, 20Y, 30Y). Expensive right-side vol typically means "
+            "the market fears long-end moves (fiscal, supply, inflation). Expensive left-side "
+            "means near-term event risk (FOMC, data). RV trades: sell expensive sector, buy cheap, "
+            "vega-neutral."
+        ),
+    }
+
+    def _find_macro_explanation(self, question: str) -> str:
+        """Search the knowledge base for a relevant explanation of the concept
+        the user is asking about."""
+        q = question.lower()
+        best_match = ""
+        best_score = 0
+        for key, explanation in self.MACRO_EXPLANATIONS.items():
+            key_words = set(key.split())
+            q_words = set(q.split())
+            # Check if key phrase is contained in question
+            if key in q:
+                score = 100  # exact phrase match
+            else:
+                score = len(key_words & q_words) * 10
+            # Also check overlap with explanation keywords
+            exp_words = set(explanation.lower().split()[:50])
+            score += len(q_words & exp_words)
+            if score > best_score and score > 5:
+                best_score = score
+                best_match = explanation
+        return best_match
+
+    # =====================================================================
+    # INSTRUMENT & SIGNAL EXTRACTION
     # =====================================================================
 
     SIGNAL_KEYWORDS = {
@@ -235,7 +344,6 @@ class MacroLLM:
     }
 
     def extract_signals(self, text: str) -> dict:
-        """Extract macro signal flags from text."""
         lower = text.lower()
         signals = {}
         for theme, keywords in self.SIGNAL_KEYWORDS.items():
@@ -243,248 +351,32 @@ class MacroLLM:
         return signals
 
     def extract_instruments(self, text: str) -> list:
-        """Pull out specific instruments mentioned."""
         lower = text.lower()
         instruments = []
-        # SOFR futures
         for m in re.finditer(r'(sr[a-z]\d{1,2}|sofr\s*(?:reds?|greens?|blues?|whites?))', lower):
             instruments.append(m.group())
-        # Swap tenors
         for m in re.finditer(r'(\d+[sy]\d*[sy]?\d*)', lower):
             instruments.append(m.group())
-        # Currency pairs
-        for m in re.finditer(r'(eur/?usd|gbp/?usd|usd/?jpy|aud/?usd|usd/?chf|usd/?cad|eur/?gbp|eur/?jpy)', lower):
+        for m in re.finditer(r'(eur/?usd|gbp/?usd|usd/?jpy|aud/?usd|usd/?chf|usd/?cad)', lower):
             instruments.append(m.group())
-        # Swaption format
         for m in re.finditer(r'(\d+[ym]x\d+[ym])', lower):
             instruments.append(m.group())
         return list(set(instruments))
 
     # =====================================================================
-    # REGIME DETECTION — much richer than the base version
-    # =====================================================================
-
-    REGIME_RULES = [
-        # (condition_fn, regime_name, confidence)
-        (lambda s: s.get("fed") and s.get("inflation") and not s.get("growth"),
-         "hawkish tightening / inflation scare", 0.9),
-        (lambda s: s.get("fed") and s.get("growth") and not s.get("inflation"),
-         "dovish pivot / growth concern", 0.85),
-        (lambda s: s.get("growth") and not s.get("inflation") and not s.get("fed"),
-         "growth slowdown", 0.8),
-        (lambda s: s.get("fiscal") and s.get("curve"),
-         "fiscal dominance / supply-driven", 0.85),
-        (lambda s: s.get("china") and (s.get("fx") or s.get("growth")),
-         "china-driven macro impulse", 0.8),
-        (lambda s: s.get("vol") and (s.get("positioning") or s.get("fx")),
-         "volatility regime shift", 0.75),
-        (lambda s: s.get("basis") and (s.get("fed") or s.get("ecb")),
-         "CB divergence / funding stress", 0.85),
-        (lambda s: s.get("carry") and s.get("curve"),
-         "carry-and-roll regime", 0.7),
-        (lambda s: s.get("ecb") and s.get("fed"),
-         "transatlantic policy divergence", 0.8),
-        (lambda s: s.get("boj") and (s.get("fx") or s.get("vol")),
-         "Japan policy normalization", 0.8),
-        (lambda s: s.get("swap_spread") and s.get("fiscal"),
-         "treasury-swap spread dislocation", 0.8),
-        (lambda s: s.get("real_rates") and s.get("inflation"),
-         "real rate repricing", 0.8),
-    ]
-
-    def infer_regime(self, signals: dict) -> tuple:
-        """Returns (regime_name, confidence). Checks user overrides first."""
-        # Check if user has corrected regime detection before
-        for override in self.memory.get("regime_overrides", {}).values():
-            override_signals = override.get("signals", {})
-            if all(signals.get(k) == v for k, v in override_signals.items() if v):
-                return (override["regime"], 0.95)
-
-        matches = []
-        for condition, regime, conf in self.REGIME_RULES:
-            try:
-                if condition(signals):
-                    matches.append((regime, conf))
-            except Exception:
-                continue
-
-        if not matches:
-            return ("mixed / unclear regime", 0.3)
-
-        # Return highest confidence match
-        matches.sort(key=lambda x: -x[1])
-        return matches[0]
-
-    # =====================================================================
-    # CROSS-ASSET MAPPING — what the regime means for each asset class
-    # =====================================================================
-
-    CROSS_ASSET_MAP = {
-        "hawkish tightening / inflation scare": {
-            "rates": "Bear flattening — front-end reprices higher, belly cheapens. Term premium may compress if market believes tightening will slow growth. Watch 2s5s10s flies.",
-            "fx": "USD strength, particularly vs low-yielders (JPY, CHF). Carry favors USD longs. DXY bid.",
-            "vol": "Rates vol bid, especially left-side (front expiry, short tails). Short gamma struggles. Payer spreads attractive.",
-            "basis": "USD funding demand rises → xccy bases widen (more negative). Watch ESTR/SOFR and TONAR/SOFR 2Y.",
-            "carry_impl": "Negative for duration carry. Positive for curve flattener carry if in steepener regime.",
-        },
-        "dovish pivot / growth concern": {
-            "rates": "Bull steepening — front-end rallies on rate cut pricing, long-end less so due to term premium. Receivers in belly attractive.",
-            "fx": "USD weakness, especially vs high-beta (AUD, NZD). JPY strength on risk-off.",
-            "vol": "Rates vol initially bid, then compresses as cuts get priced. Receiver spreads (1x2) work well.",
-            "basis": "USD funding easing → bases tighten. SOFR front-end slope flattens → 2Y basis tightener.",
-            "carry_impl": "Bull steepeners carry well. Receiver spreads collect theta.",
-        },
-        "growth slowdown": {
-            "rates": "Bull steepening. Long-end may lag if fiscal concerns persist. Duration positive.",
-            "fx": "JPY strength, USD mixed (safe haven vs growth proxy). Risk-sensitive FX weakens.",
-            "vol": "Long vol outperforms carry. Convexity valuable. Buy protection via midcurve receivers.",
-            "basis": "Modest tightening as funding stress eases. Equity underperformance may widen certain bases.",
-            "carry_impl": "Duration carry turns positive. Curve steepeners carry.",
-        },
-        "fiscal dominance / supply-driven": {
-            "rates": "Bear steepening — long-end sells off on supply. Term premium rising. 5s30s steepens.",
-            "fx": "USD mixed — fiscal impulse supports growth but undermines credibility. Watch twin deficit narrative.",
-            "vol": "Right-side vol (long tails) elevated. 10Yx20Y, 5Yx30Y rich. Sell right-side, buy left-side.",
-            "basis": "Neutral to widening — more UST issuance means more swap demand at margin.",
-            "carry_impl": "Steepeners carry well. Long-end payers for protection.",
-        },
-        "china-driven macro impulse": {
-            "rates": "Global steepening via term premium. Commodity-linked rates sell off. AUD, NZD rates bear steepen.",
-            "fx": "CNY stabilization, AUD/NZD bid, commodity FX outperforms. USD/CNH key barometer.",
-            "vol": "Vol selling opportunities as uncertainty resolves. Dispersion trades work.",
-            "basis": "AONIA/SOFR 2Y tightens as AUD outlook improves. TONAR/SOFR may widen if Japan flows shift.",
-            "carry_impl": "Steepeners and commodity FX carry both positive.",
-        },
-        "volatility regime shift": {
-            "rates": "Rates vol repricing. Gamma vs theta tradeoff shifts. Conditional structures preferred.",
-            "fx": "Higher dispersion across G10. RV opportunities in vol surface (buy cheap, sell expensive).",
-            "vol": "Convexity valuable. Straddles and ratio spreads. Midcurve options for leveraged view.",
-            "basis": "Correlated widening across bases during stress. Watch quarter-end seasonals.",
-            "carry_impl": "Theta drag from hedges. Offset with vol RV (sell expensive expiry, buy cheap).",
-        },
-        "CB divergence / funding stress": {
-            "rates": "Divergent curve moves. Fed vs ECB path creates fwd rate differentials. Pay/receive cross-market.",
-            "fx": "Rate differentials dominate. EUR/USD driven by ECB-Fed spread. Forward points move.",
-            "vol": "Cross-market vol RV. Sell overpriced CB meeting vol, buy underpriced.",
-            "basis": "Core opportunity. CB balance sheet differential is the primary driver. Look for z-score extremes.",
-            "carry_impl": "Basis trades carry negatively (pay-basis). Size for mark-to-market, not carry.",
-        },
-        "transatlantic policy divergence": {
-            "rates": "EUR rates and USD rates decouple. Relative curve trades (pay EUR fwd, receive USD fwd or vice versa).",
-            "fx": "EUR/USD driven by rate differential. Watch 2Y yield spread as key driver.",
-            "vol": "ECB vs Fed meeting vol relative value. Cross-market straddle RV.",
-            "basis": "ESTR/SOFR basis responds to relative CB balance sheet and rate path expectations.",
-            "carry_impl": "Cross-market carry trades. EUR-USD box trades via forwards.",
-        },
-        "Japan policy normalization": {
-            "rates": "JGB curve repricing. Global term premium spillover. UST long-end may cheapen.",
-            "fx": "JPY strength on normalization. USD/JPY downside. Carry unwind risk across AUD/JPY, etc.",
-            "vol": "JPY vol elevated. Rates vol in JGBs rising. Spillover to UST vol via Japanese investor hedging.",
-            "basis": "TONAR/SOFR basis tightens as BOJ normalizes. 10Y basis particularly sensitive.",
-            "carry_impl": "Short JPY carry trades at risk. Position for JPY strength.",
-        },
-        "carry-and-roll regime": {
-            "rates": "Low vol, carry-positive. Roll-down matters. Belly outperforms on carry. Conditional steepeners with carry.",
-            "fx": "Low-vol FX carry works. AUD, NZD longs funded by JPY, CHF. Monitor vol breakeven.",
-            "vol": "Vol selling works until it doesn't. Sell expensive tails, buy cheap for protection.",
-            "basis": "Carry-negative basis positions need sizing discipline. RV (cross-currency pairs) better than directional.",
-            "carry_impl": "Maximize 3M carry+roll. Duration-neutral butterflies for belly cheapness.",
-        },
-        "treasury-swap spread dislocation": {
-            "rates": "Swap spreads widen/tighten on dealer balance sheet. Invoice spreads move around auctions.",
-            "fx": "Less direct. Watch for foreign investor UST hedging flows that connect to FX forwards.",
-            "vol": "Spread vol itself is tradeable. Maturity-matched spread curve mean-reverts.",
-            "basis": "Swap spread dynamics directly affect funding costs and basis levels.",
-            "carry_impl": "Spread mean-reversion trades have 3-6M horizon. Carry component from coupon differential.",
-        },
-        "real rate repricing": {
-            "rates": "Real yield curve moves. TIPS breakevens repricing. Forward real yields for carry efficiency.",
-            "fx": "Real rate differentials drive medium-term FX. Higher real rates → stronger currency.",
-            "vol": "Breakeven vol can be traded. Real yield curve steepeners/flatteners.",
-            "basis": "Indirect — real rate levels affect foreign demand for USTs → hedging flows → basis.",
-            "carry_impl": "Forward real yield trades (2y3y, 5y5y) more carry-efficient than spot.",
-        },
-    }
-
-    def get_cross_asset(self, regime: str) -> dict:
-        """Get cross-asset implications for a regime."""
-        return self.CROSS_ASSET_MAP.get(regime, {})
-
-    # =====================================================================
-    # PNL DRIVER ANALYSIS
-    # =====================================================================
-
-    def analyze_pnl_drivers(self, regime: str, signals: dict) -> str:
-        drivers = {
-            "hawkish tightening / inflation scare":
-                "PnL dominated by carry drag on duration and curve shape (flattening). Front-end repricing "
-                "hurts receivers. Vol spikes hurt short gamma. Flatteners and payer spreads outperform.",
-            "dovish pivot / growth concern":
-                "PnL driven by duration gains and convexity. Receivers and bull steepeners print. "
-                "Long vol pays off initially. Basis tightens adding to RV PnL.",
-            "growth slowdown":
-                "PnL driven by duration gains. Steepeners benefit. Long vol and convexity outperform carry. "
-                "Risk-off FX (JPY strength) adds to hedged positions.",
-            "fiscal dominance / supply-driven":
-                "PnL dominated by long-end moves. Steepeners benefit. Right-side vol rich — selling it generates "
-                "theta but tail risk is real. Invoice spreads move around auctions.",
-            "china-driven macro impulse":
-                "PnL driven by cyclicals and commodities beta. Steepeners benefit from term premium. "
-                "Commodity FX carry adds up. Vol selling works as uncertainty resolves.",
-            "volatility regime shift":
-                "PnL dominated by convexity vs theta tradeoff. Gamma-scalping opportunities. "
-                "RV trades between cheap and expensive vol points on the surface.",
-            "CB divergence / funding stress":
-                "PnL driven by basis mark-to-market (carry is negative on pay-basis). "
-                "Cross-market curve RV. Sizing and timing matter more than direction.",
-            "transatlantic policy divergence":
-                "PnL driven by relative rate moves. EUR vs USD curve trades. "
-                "Basis PnL from ESTR/SOFR directional and RV.",
-            "Japan policy normalization":
-                "PnL driven by JGB repricing spillover. JPY FX gains. "
-                "TONAR/SOFR basis tightening. Global long-end cheapening.",
-            "carry-and-roll regime":
-                "PnL driven by carry and roll-down. Low vol means theta collection works. "
-                "Belly outperforms. Size matters — small carry compounds.",
-            "treasury-swap spread dislocation":
-                "PnL from spread mean-reversion (3-6M horizon). Invoice spread moves around auctions. "
-                "Maturity-matched curve trades.",
-            "real rate repricing":
-                "PnL from real yield curve moves. Forward real yields more carry-efficient. "
-                "Breakeven repricing affects nominal duration.",
-        }
-        base = drivers.get(regime, "PnL drivers unclear — positioning and technicals likely dominate.")
-
-        # Enhance with signal-specific context
-        extras = []
-        if signals.get("positioning"):
-            extras.append("Positioning extremes amplify moves — watch for unwinds.")
-        if signals.get("carry"):
-            extras.append("Carry component significant — check 3M roll-down on all positions.")
-        if signals.get("vol") and signals.get("curve"):
-            extras.append("Vol-curve interaction: gamma on curve trades matters here.")
-        if extras:
-            base += "\n\nAdditional: " + " ".join(extras)
-        return base
-
-    # =====================================================================
-    # MEMORY RETRIEVAL — find similar past interactions
+    # MEMORY RETRIEVAL
     # =====================================================================
 
     def retrieve_similar(self, question: str, section: str = "", top_k: int = 3) -> list:
-        """Keyword-overlap retrieval with section boost."""
         q_words = set(question.lower().split())
         results = []
         for interaction in self.memory.get("interactions", []):
-            # Skip interactions that got bad feedback
             if interaction.get("feedback") == "bad":
                 continue
             i_words = set(interaction.get("question", "").lower().split())
             score = len(q_words & i_words)
-            # Boost if same section
             if section and interaction.get("section", "") == section:
                 score += 2
-            # Boost if it got good feedback
             if interaction.get("feedback") == "good":
                 score += 1
             if score > 2:
@@ -493,7 +385,6 @@ class MacroLLM:
         return [r[1] for r in results[:top_k]]
 
     def retrieve_corrections(self, question: str) -> list:
-        """Find past bad answers to avoid repeating mistakes."""
         q_words = set(question.lower().split())
         results = []
         for correction in self.memory.get("trade_corrections", []):
@@ -508,190 +399,46 @@ class MacroLLM:
     # =====================================================================
 
     def classify_question(self, question: str) -> str:
-        """Classify what type of question is being asked."""
         q = question.lower()
-        if any(w in q for w in ["why", "explain", "logic", "reasoning", "how did you", "rationale"]):
-            return "explain_logic"
-        if any(w in q for w in ["wrong", "incorrect", "mistake", "error", "no ", "that's not"]):
+        if any(w in q for w in ["why", "explain", "how does", "how do", "what makes",
+                                 "reasoning", "logic", "rationale", "wondering",
+                                 "what is the", "what's the", "how is", "dynamic"]):
+            return "explain"
+        if any(w in q for w in ["wrong", "incorrect", "mistake", "error", "not right",
+                                 "that's not", "thats not", "should not", "shouldnt",
+                                 "dont use", "don't use", "stop using"]):
             return "correction"
-        if any(w in q for w in ["trade", "structure", "express", "how would", "what trade"]):
-            return "trade_construction"
-        if any(w in q for w in ["carry", "roll", "pnl", "risk", "drawdown", "sizing"]):
-            return "risk_and_carry"
-        if any(w in q for w in ["compare", "vs", "versus", "relative", "between"]):
-            return "relative_value"
-        if any(w in q for w in ["what if", "scenario", "if the", "suppose"]):
-            return "scenario_analysis"
-        if any(w in q for w in ["basis", "xccy", "cross-currency", "funding"]):
-            return "basis_specific"
-        return "general"
+        if any(w in q for w in ["what if", "scenario", "if the", "suppose", "imagine"]):
+            return "scenario"
+        if any(w in q for w in ["how would you", "what trade", "how to express",
+                                 "how to structure", "what structure"]):
+            return "trade_idea"
+        if any(w in q for w in ["compare", "vs", "versus", "relative", "between",
+                                 "which is better"]):
+            return "compare"
+        # "tell me more about X trade" → trade_idea
+        if ("trade" in q or "fly" in q or "butterfly" in q or "steepener" in q
+                or "flattener" in q or "receiver" in q or "payer" in q):
+            if any(w in q for w in ["tell me", "more about", "elaborate", "expand",
+                                     "walk me through", "break down", "detail"]):
+                return "trade_idea"
+        return "discuss"
 
     # =====================================================================
-    # RESPONSE GENERATION — the core engine
+    # CONTEXT HELPERS
     # =====================================================================
-
-    def generate_response(self, briefing_content: str, section_context: str,
-                          question: str, chat_history: list) -> str:
-        """Generate a response using deterministic macro reasoning.
-        Pulls from ALL learning sources: briefing, feedback, insights, knowledge docs,
-        conversation memory, learned rules, and current chat history."""
-
-        # 1. Extract signals from briefing + section + question
-        combined_text = f"{briefing_content}\n{section_context}\n{question}"
-        signals = self.extract_signals(combined_text)
-        instruments = self.extract_instruments(f"{section_context}\n{question}")
-
-        # 2. Detect regime
-        regime, confidence = self.infer_regime(signals)
-
-        # 3. Get cross-asset implications
-        cross_asset = self.get_cross_asset(regime)
-
-        # 4. PnL analysis
-        pnl = self.analyze_pnl_drivers(regime, signals)
-
-        # 5. Classify the question
-        q_type = self.classify_question(question)
-
-        # 6. Pull similar past interactions
-        section_name = ""
-        if section_context:
-            first_line = section_context.strip().split("\n")[0]
-            section_name = first_line.replace("##", "").strip()
-        similar = self.retrieve_similar(question, section_name)
-        corrections = self.retrieve_corrections(question)
-
-        # 7. Load ALL app context — insights, feedback, knowledge docs, learned rules
-        insights = self._load_insights()
-        feedback_entries = self._load_feedback()
-        knowledge_docs = self._load_knowledge_docs()
-        learned_rules = self._get_relevant_learned_rules(question, section_name)
-
-        # 8. Parse conversation context — what has the user been saying in this chat?
-        conv_context = self._parse_chat_history(chat_history, question)
-
-        # 9. Build response based on question type
-        response_parts = []
-
-        # Always start with the regime read
-        response_parts.append(f"**Regime read:** {regime} (confidence: {int(confidence * 100)}%)")
-
-        if q_type == "explain_logic":
-            response_parts.append(self._explain_logic(regime, cross_asset, signals,
-                                                       section_context, instruments))
-        elif q_type == "correction":
-            response_parts.append(self._handle_correction(question, section_context,
-                                                           regime, signals))
-        elif q_type == "trade_construction":
-            response_parts.append(self._construct_trade(regime, cross_asset, signals,
-                                                         instruments, section_context))
-        elif q_type == "risk_and_carry":
-            response_parts.append(self._analyze_risk_carry(regime, pnl, signals,
-                                                            instruments))
-        elif q_type == "relative_value":
-            response_parts.append(self._relative_value(regime, cross_asset, signals,
-                                                        instruments, section_context))
-        elif q_type == "scenario_analysis":
-            response_parts.append(self._scenario_analysis(question, regime, cross_asset,
-                                                           signals))
-        elif q_type == "basis_specific":
-            response_parts.append(self._basis_analysis(regime, cross_asset, signals,
-                                                        section_context))
-        else:
-            # General — give the full cross-asset picture
-            response_parts.append(self._general_response(regime, cross_asset, pnl,
-                                                          signals, section_context))
-
-        # Inject relevant knowledge from uploaded docs
-        relevant_kb = self._find_relevant_knowledge(knowledge_docs, question, section_name)
-        if relevant_kb:
-            response_parts.append("\n**From uploaded documents:**")
-            for doc in relevant_kb[:2]:
-                # Truncate long summaries
-                summary = doc["summary"][:200] + "..." if len(doc["summary"]) > 200 else doc["summary"]
-                response_parts.append(f"- [{doc['doc_type'].upper()}] **{doc['title']}:** {summary}")
-
-        # Inject relevant feedback history
-        relevant_fb = self._find_relevant_feedback(feedback_entries, question, section_name)
-        if relevant_fb:
-            response_parts.append("\n**From your briefing feedback:**")
-            for fb in relevant_fb[:3]:
-                label = "GOOD" if fb.get("rating") == "up" else "IMPROVE"
-                note = fb.get("note", "")
-                section = fb.get("section", fb.get("trade", ""))
-                if note:
-                    response_parts.append(f"- [{fb.get('date','')}] {label} {section}: {note}")
-
-        # Inject learned rules from past conversations
-        if learned_rules:
-            response_parts.append("\n**Learned from past conversations:**")
-            for rule in learned_rules[:3]:
-                response_parts.append(f"- {rule['rule'][:200]}")
-
-        # Add insight context if relevant
-        relevant_insights = self._find_relevant_insights(insights, question)
-        if relevant_insights:
-            response_parts.append("\n**Saved insights:**")
-            for ins in relevant_insights[:2]:
-                response_parts.append(f"- {ins.get('insight', '')}")
-
-        # Add conversation thread context
-        if conv_context:
-            response_parts.append(f"\n**Thread context:** {conv_context}")
-
-        # Add similar past thinking
-        if similar:
-            response_parts.append("\n**Similar past thinking:**")
-            for s in similar[:2]:
-                response_parts.append(f"- Q: {s['question']}")
-                ans = s.get("answer", "")
-                if len(ans) > 150:
-                    ans = ans[:150] + "..."
-                response_parts.append(f"  A: {ans}")
-
-        # Add corrections warning
-        if corrections:
-            response_parts.append("\n**⚠ Past mistakes on similar questions (avoiding):**")
-            for c in corrections[:1]:
-                response_parts.append(f"- Previously gave a bad answer to: '{c['question'][:100]}'")
-
-        return "\n\n".join(response_parts)
-
-    # =====================================================================
-    # CONTEXT PARSERS — extract relevant info from app data
-    # =====================================================================
-
-    def _parse_chat_history(self, chat_history: list, current_question: str) -> str:
-        """Extract relevant context from the current conversation thread."""
-        if not chat_history:
-            return ""
-        # Look at what the user has been discussing in this session
-        user_msgs = [m["content"] for m in chat_history[-10:] if m.get("role") == "user"]
-        if not user_msgs:
-            return ""
-        # Build a thread summary: what themes has the user been asking about?
-        all_text = " ".join(user_msgs)
-        thread_signals = self.extract_signals(all_text)
-        active_themes = [k for k, v in thread_signals.items() if v]
-        if not active_themes:
-            return ""
-        return f"This conversation has covered: {', '.join(active_themes)}. Building on {len(user_msgs)} prior messages."
 
     def _get_relevant_learned_rules(self, question: str, section: str) -> list:
-        """Find learned rules relevant to the current question."""
         rules = self.memory.get("learned_rules", [])
         if not rules:
             return []
         q_words = set(question.lower().split())
         results = []
         for rule in rules:
-            rule_text = rule.get("rule", "").lower()
-            r_words = set(rule_text.split())
+            r_words = set(rule.get("rule", "").lower().split())
             score = len(q_words & r_words)
-            # Boost if same section
             if section and rule.get("section", "") == section:
                 score += 2
-            # Boost corrections over positive patterns
             if rule.get("source") == "conversation_correction":
                 score += 1
             if score > 2:
@@ -699,273 +446,39 @@ class MacroLLM:
         results.sort(key=lambda x: -x[0])
         return [r[1] for r in results[:5]]
 
-    def _find_relevant_knowledge(self, docs: dict, question: str, section: str) -> list:
-        """Find uploaded knowledge docs relevant to the question."""
+    def _find_relevant_knowledge(self, docs: dict, question: str) -> list:
         q_words = set(question.lower().split())
         results = []
         for doc_type, doc_list in docs.items():
             for doc in doc_list:
                 title_words = set(doc["title"].lower().split())
-                summary_words = set(doc["summary"].lower().split()[:100])  # first 100 words
+                summary_words = set(doc["summary"].lower().split()[:100])
                 score = len(q_words & title_words) * 3 + len(q_words & summary_words)
-                # Boost tactical docs for trade questions
-                if doc_type == "tactical" and any(w in question.lower() for w in ["trade", "idea", "position"]):
-                    score += 3
                 if score > 3:
                     results.append((score, doc))
         results.sort(key=lambda x: -x[0])
         return [r[1] for r in results[:3]]
 
-    def _find_relevant_feedback(self, feedback_entries: list, question: str, section: str) -> list:
-        """Find feedback entries relevant to the current question/section."""
+    def _find_relevant_feedback(self, entries: list, question: str, section: str) -> list:
+        q_words = set(question.lower().split())
         results = []
-        q_lower = question.lower()
-        for entry in feedback_entries:
+        for entry in entries:
             score = 0
-            entry_section = entry.get("section", "")
-            entry_trade = entry.get("trade", "")
-            entry_note = entry.get("note", "")
-            # Direct section match
-            if section and entry_section and section.lower() in entry_section.lower():
+            es = entry.get("section", "")
+            if section and es and section.lower() in es.lower():
                 score += 5
-            # Keyword overlap with note
-            if entry_note:
-                note_words = set(entry_note.lower().split())
-                q_words = set(q_lower.split())
-                score += len(q_words & note_words)
-            # Trade keyword overlap
-            if entry_trade:
-                trade_words = set(entry_trade.lower().split())
-                q_words = set(q_lower.split())
-                score += len(q_words & trade_words)
-            if score > 2 and (entry.get("rating") or entry.get("note")):
+            note = entry.get("note", "")
+            if note:
+                score += len(q_words & set(note.lower().split()))
+            trade = entry.get("trade", "")
+            if trade:
+                score += len(q_words & set(trade.lower().split()))
+            if score > 2 and (entry.get("rating") or note):
                 results.append((score, entry))
         results.sort(key=lambda x: -x[0])
         return [r[1] for r in results[:5]]
 
-    # =====================================================================
-    # RESPONSE BUILDERS BY QUESTION TYPE
-    # =====================================================================
-
-    def _explain_logic(self, regime, cross_asset, signals, section_ctx, instruments):
-        lines = ["**Breaking down the logic:**"]
-
-        # What signals are active
-        active = [k for k, v in signals.items() if v]
-        lines.append(f"Active macro themes: {', '.join(active) if active else 'none detected'}")
-        lines.append(f"This maps to a **{regime}** regime.")
-
-        # Cross-asset implications
-        if cross_asset:
-            lines.append("\n**Cross-asset implications:**")
-            for asset, impl in cross_asset.items():
-                if asset != "carry_impl":
-                    lines.append(f"- **{asset.upper()}:** {impl}")
-
-        # If instruments mentioned, contextualize
-        if instruments:
-            lines.append(f"\n**Instruments in focus:** {', '.join(instruments)}")
-            lines.append("The key is how these instruments are positioned relative to "
-                         "the regime — not just direction, but where the pricing is "
-                         "vulnerable to a shift.")
-
-        return "\n".join(lines)
-
-    def _handle_correction(self, question, section_ctx, regime, signals):
-        lines = ["**Acknowledged — let me reconsider.**"]
-        lines.append(f"Current regime read: {regime}")
-        lines.append("If this regime classification is wrong, the entire trade logic "
-                      "chain breaks. Let me re-examine:")
-
-        active = [k for k, v in signals.items() if v]
-        lines.append(f"\nDetected signals: {', '.join(active)}")
-        lines.append("\nPossible alternative readings:")
-
-        # Generate alternative regimes
-        for condition, alt_regime, conf in self.REGIME_RULES:
-            try:
-                if condition(signals) and alt_regime != regime:
-                    alt_ca = self.get_cross_asset(alt_regime)
-                    rates_impl = alt_ca.get("rates", "N/A")
-                    lines.append(f"- **{alt_regime}:** {rates_impl}")
-            except Exception:
-                continue
-
-        lines.append("\nTell me what you think the right read is and I'll adjust "
-                      "my framework permanently.")
-        return "\n".join(lines)
-
-    def _construct_trade(self, regime, cross_asset, signals, instruments, section_ctx):
-        lines = ["**Trade construction:**"]
-
-        rates_impl = cross_asset.get("rates", "")
-        vol_impl = cross_asset.get("vol", "")
-        basis_impl = cross_asset.get("basis", "")
-        carry_impl = cross_asset.get("carry_impl", "")
-
-        lines.append(f"Given **{regime}** regime:")
-
-        # Rates trade
-        if signals.get("curve") or signals.get("fed") or signals.get("ecb"):
-            lines.append(f"\n**Rates:** {rates_impl}")
-            if "flattening" in rates_impl.lower():
-                lines.append("→ Structure: Pay 2Y vs Receive 10Y (duration-weighted ~0.25:1.0)")
-                lines.append("→ Or belly-cheapening fly: 2s/5s/10s (0.50:-1.0:0.55)")
-            elif "steepening" in rates_impl.lower():
-                lines.append("→ Structure: Receive 2Y vs Pay 10Y (duration-weighted)")
-                lines.append("→ Or forward curve steepener: receive 1Y1Y vs pay 2Y2Y")
-            lines.append(f"→ Carry consideration: {carry_impl}")
-
-        # Vol trade
-        if signals.get("vol"):
-            lines.append(f"\n**Vol:** {vol_impl}")
-            lines.append("→ Check: which part of the swaption surface is expensive vs cheap?")
-            lines.append("→ Vega-neutral RV: sell expensive expiry/tail, buy cheap one.")
-
-        # Basis trade
-        if signals.get("basis") or signals.get("fx"):
-            lines.append(f"\n**Basis:** {basis_impl}")
-            lines.append("→ Check composite z-scores across currencies at 2Y and 10Y.")
-            lines.append("→ RV (level-neutral) preferred over outright directional.")
-
-        # Risk
-        lines.append("\n**Risk:** What makes this wrong?")
-        lines.append(f"- Regime shifts to something other than {regime}")
-        lines.append("- Positioning unwinds create adverse mark-to-market")
-        lines.append("- Time decay if the catalyst doesn't materialize")
-
-        return "\n".join(lines)
-
-    def _analyze_risk_carry(self, regime, pnl, signals, instruments):
-        lines = ["**Risk and carry analysis:**"]
-        lines.append(f"\n{pnl}")
-
-        if instruments:
-            lines.append(f"\nInstruments: {', '.join(instruments)}")
-
-        lines.append("\n**Key considerations:**")
-        lines.append("- Always check 3M carry+roll on every position")
-        lines.append("- Duration-neutral or risk-weighted — never naked")
-        lines.append("- Size based on conviction and vol regime (smaller in high-vol)")
-        lines.append("- If carry is negative, the mark-to-market thesis needs to be strong enough to compensate")
-
-        ca = self.get_cross_asset(regime)
-        carry_note = ca.get("carry_impl", "")
-        if carry_note:
-            lines.append(f"\n**Regime-specific:** {carry_note}")
-
-        return "\n".join(lines)
-
-    def _relative_value(self, regime, cross_asset, signals, instruments, section_ctx):
-        lines = ["**Relative value framework:**"]
-        lines.append(f"In a **{regime}** regime, the RV opportunities are:")
-
-        for asset, impl in cross_asset.items():
-            if asset != "carry_impl":
-                lines.append(f"- **{asset.upper()}:** {impl}")
-
-        lines.append("\n**RV approach:**")
-        lines.append("- Identify what's too rich/cheap vs historical (z-score basis)")
-        lines.append("- Duration-neutral or beta-neutral construction")
-        lines.append("- Time horizon: mean-reversion trades 1-3M, structural 3-6M")
-
-        if instruments and len(instruments) >= 2:
-            lines.append(f"\n**Comparing:** {' vs '.join(instruments[:2])}")
-            lines.append("The key is the relative carry+roll and the "
-                         "historical relationship between these two.")
-
-        return "\n".join(lines)
-
-    def _scenario_analysis(self, question, regime, cross_asset, signals):
-        lines = [f"**Scenario analysis from current regime ({regime}):**"]
-
-        # Try to detect what the hypothetical is
-        q = question.lower()
-        if "cut" in q or "dovish" in q or "ease" in q:
-            alt = "dovish pivot / growth concern"
-        elif "hike" in q or "hawkish" in q or "tighten" in q:
-            alt = "hawkish tightening / inflation scare"
-        elif "recession" in q or "slowdown" in q:
-            alt = "growth slowdown"
-        elif "china" in q or "stimulus" in q:
-            alt = "china-driven macro impulse"
-        elif "vol" in q or "crash" in q or "shock" in q:
-            alt = "volatility regime shift"
-        elif "fiscal" in q or "supply" in q or "issuance" in q:
-            alt = "fiscal dominance / supply-driven"
-        else:
-            alt = None
-
-        if alt and alt != regime:
-            alt_ca = self.get_cross_asset(alt)
-            lines.append(f"\n**If regime shifts to: {alt}**")
-            for asset, impl in alt_ca.items():
-                if asset != "carry_impl":
-                    lines.append(f"- **{asset.upper()}:** {impl}")
-
-            lines.append(f"\n**Transition from {regime} → {alt}:**")
-            lines.append("- Positions that flip: check which trades are regime-dependent")
-            lines.append("- Hedges: what conditional structures protect against this shift?")
-            lines.append("- Timing: what would signal the transition (data, CB communication, flows)?")
-        else:
-            lines.append("\nCould not identify the specific scenario. "
-                         "Try asking about a specific catalyst (e.g., 'what if the Fed cuts?', "
-                         "'what if China announces stimulus?', 'what if vol spikes?')")
-
-        return "\n".join(lines)
-
-    def _basis_analysis(self, regime, cross_asset, signals, section_ctx):
-        lines = ["**Cross-currency basis analysis:**"]
-
-        basis_impl = cross_asset.get("basis", "Basis implications depend on the funding regime.")
-        lines.append(f"\n{basis_impl}")
-
-        lines.append("\n**Driver framework (from Arjun's XCCY model):**")
-        lines.append("2Y drivers: CB balance sheet, SOFR front-end slope, 1Yx1Y swaption vol, local equity performance")
-        lines.append("10Y drivers: 5s/30s swap curve, 5Yx5Y rate vol, 10Y swap spreads, corporate bond spreads")
-
-        lines.append("\n**Current signal interpretation:**")
-        if signals.get("fed"):
-            lines.append("- Fed signal active → affects SOFR front-end slope → 2Y basis driver")
-        if signals.get("ecb"):
-            lines.append("- ECB signal active → ESTR/SOFR basis directly affected")
-        if signals.get("boj"):
-            lines.append("- BOJ signal active → TONAR/SOFR basis, especially 10Y")
-        if signals.get("vol"):
-            lines.append("- Vol elevated → 1Yx1Y vol tightens 2Y basis; 5Yx5Y vol tightens 10Y basis")
-        if signals.get("fiscal"):
-            lines.append("- Fiscal/issuance signal → swap spreads affected → 10Y basis implications")
-
-        lines.append("\n**Approach:** Check composite z-scores. RV (level-neutral) trades "
-                      "across currency pairs are preferred over outright directional basis.")
-
-        return "\n".join(lines)
-
-    def _general_response(self, regime, cross_asset, pnl, signals, section_ctx):
-        lines = [f"**Macro framework for {regime}:**"]
-
-        if cross_asset:
-            for asset, impl in cross_asset.items():
-                if asset != "carry_impl":
-                    lines.append(f"\n**{asset.upper()}:** {impl}")
-
-        lines.append(f"\n**PnL drivers:** {pnl}")
-
-        carry_note = cross_asset.get("carry_impl", "")
-        if carry_note:
-            lines.append(f"\n**Carry:** {carry_note}")
-
-        lines.append("\n**Key question:** Not just what the direction is, but where "
-                      "is the market *mispricing* the regime? That's where the trade is.")
-
-        return "\n".join(lines)
-
-    # =====================================================================
-    # INSIGHT MATCHING
-    # =====================================================================
-
     def _find_relevant_insights(self, insights: list, question: str) -> list:
-        """Find insights relevant to the current question."""
         q_words = set(question.lower().split())
         results = []
         for ins in insights:
@@ -976,28 +489,478 @@ class MacroLLM:
         results.sort(key=lambda x: -x[0])
         return [r[1] for r in results[:3]]
 
+    def _parse_chat_history(self, chat_history: list) -> list:
+        """Get recent user messages from this conversation."""
+        return [m["content"] for m in chat_history[-10:] if m.get("role") == "user"]
+
     # =====================================================================
-    # PUBLIC API — called by app.py
+    # RESPONSE GENERATION — grounded in briefing content + question
+    # =====================================================================
+
+    def generate_response(self, briefing_content: str, section_context: str,
+                          question: str, chat_history: list) -> str:
+        """Generate a response that directly addresses the user's question
+        using the actual briefing content as the primary source."""
+
+        # Determine section name
+        section_name = ""
+        if section_context:
+            first_line = section_context.strip().split("\n")[0]
+            section_name = first_line.replace("##", "").replace("###", "").strip()
+
+        # Classify the question
+        q_type = self.classify_question(question)
+
+        # Load supplementary context
+        insights = self._load_insights()
+        feedback_entries = self._load_feedback()
+        knowledge_docs = self._load_knowledge_docs()
+        learned_rules = self._get_relevant_learned_rules(question, section_name)
+        similar = self.retrieve_similar(question, section_name)
+        corrections = self.retrieve_corrections(question)
+        prev_messages = self._parse_chat_history(chat_history)
+
+        # Build the response — QUESTION-FIRST, not regime-first
+        parts = []
+
+        if q_type == "correction":
+            parts.append(self._respond_correction(question, section_context,
+                                                   briefing_content, prev_messages))
+        elif q_type == "explain":
+            parts.append(self._respond_explain(question, section_context,
+                                                briefing_content))
+        elif q_type == "scenario":
+            parts.append(self._respond_scenario(question, section_context,
+                                                 briefing_content))
+        elif q_type == "trade_idea":
+            parts.append(self._respond_trade_idea(question, section_context,
+                                                   briefing_content))
+        elif q_type == "compare":
+            parts.append(self._respond_compare(question, section_context,
+                                                briefing_content))
+        else:
+            parts.append(self._respond_discuss(question, section_context,
+                                               briefing_content))
+
+        # Append learned context (concisely — only if relevant)
+        supp = self._build_supplementary(
+            question, section_name, learned_rules, feedback_entries,
+            knowledge_docs, insights, similar, corrections
+        )
+        if supp:
+            parts.append(supp)
+
+        return "\n\n".join(parts)
+
+    # =====================================================================
+    # RESPONSE TYPES — each grounded in actual content
+    # =====================================================================
+
+    def _respond_correction(self, question, section_ctx, briefing, prev_msgs):
+        """User is telling us something is wrong."""
+        lines = ["**Noted — I'll apply this correction going forward.**"]
+        lines.append(f"Your point: {question}")
+
+        # Acknowledge what the briefing said
+        if section_ctx:
+            claims = self._extract_key_claims(section_ctx)
+            if claims:
+                lines.append("\nThe briefing stated:")
+                for c in claims[:3]:
+                    lines.append(f"- {c}")
+
+        lines.append("\nI've recorded this as a permanent correction. "
+                      "Future briefings will incorporate this feedback.")
+
+        # If they said something about data sources
+        if any(w in question.lower() for w in ["site", "source", "unreliable", "wrong data"]):
+            lines.append("\nI'll also flag the data source issue — this should "
+                          "improve search result quality in future briefings.")
+
+        return "\n".join(lines)
+
+    def _respond_explain(self, question, section_ctx, briefing):
+        """User wants to understand WHY something is the way it is."""
+        lines = []
+
+        # First check: do we have a deep macro explanation for this concept?
+        explanation = self._find_macro_explanation(question)
+        if explanation:
+            lines.append(explanation)
+
+        # Then: what does the briefing say about this topic?
+        relevant = self._find_relevant_section(briefing, question, section_ctx)
+        if relevant and len(relevant) > 50:
+            claims = self._extract_key_claims(relevant)
+            if claims:
+                lines.append("\n**What the briefing says:**")
+                for c in claims[:5]:
+                    lines.append(f"- {c}")
+
+        # If we didn't find a macro explanation, build one from context
+        if not explanation:
+            lines.insert(0, self._reason_about_question(question, section_ctx, briefing))
+
+        # Add structural intuition
+        q = question.lower()
+        if "why" in q or "how" in q or "what" in q:
+            lines.append(self._add_structural_intuition(question))
+
+        if not lines:
+            lines.append(self._reason_about_question(question, section_ctx, briefing))
+
+        return "\n".join(lines)
+
+    def _respond_scenario(self, question, section_ctx, briefing):
+        """User wants to know 'what if X happens?'"""
+        lines = [f"**Scenario:** {question}"]
+
+        # What does the briefing currently assume?
+        if section_ctx:
+            claims = self._extract_key_claims(section_ctx)
+            if claims:
+                lines.append("\n**Current briefing assumption:**")
+                for c in claims[:3]:
+                    lines.append(f"- {c}")
+
+        # What changes under the scenario?
+        lines.append("\n**If this scenario plays out:**")
+        q = question.lower()
+        if "cut" in q or "ease" in q or "dovish" in q:
+            lines.append("- Front-end rallies (2Y), curve bull steepens")
+            lines.append("- USD weakens, risk currencies (AUD, NZD) bid")
+            lines.append("- Xccy bases tighten as USD funding eases")
+            lines.append("- Receivers and bull steepeners work")
+        elif "hike" in q or "hawk" in q or "tighten" in q:
+            lines.append("- Front-end sells off, curve bear flattens")
+            lines.append("- USD strengthens, carry favors long USD")
+            lines.append("- Xccy bases widen as USD funding tightens")
+            lines.append("- Payer spreads and flatteners work")
+        elif "recession" in q or "slowdown" in q:
+            lines.append("- Duration rally, long-end outperforms if fiscal fears are contained")
+            lines.append("- Risk-off: JPY strength, equity vol spike")
+            lines.append("- Credit spreads widen → basis impact via corporate flow channel")
+        elif "inflation" in q or "cpi" in q:
+            lines.append("- Breakevens reprice higher, nominals sell off")
+            lines.append("- Curve bear steepens if term premium rises")
+            lines.append("- Real rates matter: if real rates rise → USD strength")
+        else:
+            lines.append("- The key question: which sector of the curve reprices?")
+            lines.append("- Check the second-order effects: what does this mean for positioning?")
+            lines.append("- What conditional structures give you asymmetry into this outcome?")
+
+        lines.append("\n**Positioning consideration:** Think about what's already priced. "
+                      "If the scenario is consensus, the move may already be in the market.")
+
+        return "\n".join(lines)
+
+    def _respond_trade_idea(self, question, section_ctx, briefing):
+        """User wants a trade structure or wants to discuss one from the briefing."""
+        lines = []
+
+        # Check if user is asking about a trade idea FROM the briefing
+        q = question.lower()
+        is_asking_about_existing = any(w in q for w in [
+            "tell me", "more about", "elaborate", "expand", "walk me through",
+            "break down", "detail", "explain the",
+        ])
+
+        # Pull trade-related sections from the briefing
+        sections = self._extract_sections(briefing)
+        trade_section = ""
+        for name, content in sections.items():
+            if any(w in name.lower() for w in ["trade", "idea", "construction", "positioning"]):
+                trade_section += content + "\n"
+
+        if is_asking_about_existing and (section_ctx or trade_section):
+            # User is asking about a specific trade idea mentioned in the briefing
+            source = section_ctx if section_ctx else trade_section
+            claims = self._extract_key_claims(source)
+            lines.append("**From today's briefing:**")
+            if claims:
+                for c in claims:
+                    lines.append(f"- {c}")
+            else:
+                # No structured claims, quote the raw content (trimmed)
+                for ln in source.strip().split("\n")[:8]:
+                    ln = ln.strip()
+                    if ln and not ln.startswith("#"):
+                        lines.append(f"- {ln[:300]}")
+            lines.append("")
+        else:
+            lines.append("**Trade construction:**")
+            if trade_section:
+                claims = self._extract_key_claims(trade_section)
+                if claims:
+                    lines.append("\n**From today's briefing:**")
+                    for c in claims[:4]:
+                        lines.append(f"- {c}")
+
+        # Add framework guidance based on the specific instrument
+        if "butterfly" in q or "fly" in q or "2s5s10s" in q:
+            lines.append("\n**Butterfly mechanics:**")
+            lines.append("- Structure: buy wings (2Y+10Y), sell belly (5Y) — DV01-weighted")
+            lines.append("- Typical weights: ~0.50 / -1.0 / 0.55 (adjust for DV01)")
+            lines.append("- Pays off when belly cheapens relative to wings")
+            lines.append("- Check 3M carry+roll — belly cheapening flies often have positive carry if curve is steep")
+            lines.append("- Risk: belly richening if easing cycle deepens (more cuts priced)")
+            lines.append("- Entry signal: when 5Y is >1 std dev cheap to fitted curve")
+        elif "steepen" in q or "flatten" in q:
+            lines.append("\n**Curve trade construction:**")
+            lines.append("- Always duration-weight the legs (DV01-neutral)")
+            lines.append("- Forward-starting (e.g. 1Y fwd) vs spot: forwards have more carry but more gamma risk")
+            lines.append("- Consider conditional structures (midcurve options) if vol is cheap")
+            lines.append("- Check what's driving the curve: rate expectations vs term premium")
+        elif "basis" in q or "xccy" in q:
+            lines.append("\n**Basis trade construction:**")
+            lines.append("- RV (level-neutral across currencies) preferred over directional")
+            lines.append("- Check composite z-scores at 2Y and 10Y")
+            lines.append("- Pay-basis carries negatively — size for mark-to-market, not carry")
+            lines.append("- Key drivers: USD funding, CB balance sheets, quarter-end, risk appetite")
+        elif "receiver" in q or "payer" in q:
+            lines.append("\n**Swap trade construction:**")
+            lines.append("- Receiver = receive fixed, pay floating — profits from rate decline")
+            lines.append("- Payer = pay fixed, receive floating — profits from rate increase")
+            lines.append("- Forward-starting reduces carry cost but adds mark-to-market risk")
+            lines.append("- Spread trades (e.g. receive 5Y pay 2Y) are lower risk than outrights")
+        else:
+            lines.append("\n**Key principles:**")
+            lines.append("- Structure must have: direction, weights, carry/roll estimate, entry logic, risk")
+            lines.append("- Prefer carry-positive or premium-neutral constructions")
+            lines.append("- Always specify what makes the trade wrong")
+            lines.append("- Consider the horizon: 1W tactical vs 3M structural have different structures")
+
+        return "\n".join(lines)
+
+    def _respond_compare(self, question, section_ctx, briefing):
+        """User wants to compare two things."""
+        lines = [f"**Comparison:**"]
+
+        instruments = self.extract_instruments(question)
+        if instruments:
+            lines.append(f"Instruments: {', '.join(instruments)}")
+
+        # Pull relevant briefing content
+        relevant = self._find_relevant_section(briefing, question, section_ctx)
+        if relevant:
+            claims = self._extract_key_claims(relevant)
+            if claims:
+                lines.append("\n**From the briefing:**")
+                for c in claims[:4]:
+                    lines.append(f"- {c}")
+
+        lines.append("\n**Framework for comparison:**")
+        lines.append("- Relative carry+roll over 3M horizon")
+        lines.append("- Historical relationship (z-score of the spread)")
+        lines.append("- Sensitivity to the macro catalyst you're betting on")
+        lines.append("- Liquidity and transaction cost")
+
+        return "\n".join(lines)
+
+    def _respond_discuss(self, question, section_ctx, briefing):
+        """General discussion — ground everything in the briefing."""
+        lines = []
+
+        # Find and present the relevant briefing content
+        relevant = self._find_relevant_section(briefing, question, section_ctx)
+        if relevant and len(relevant) > 50:
+            claims = self._extract_key_claims(relevant)
+            if claims:
+                lines.append("**From the briefing:**")
+                for c in claims[:5]:
+                    lines.append(f"- {c}")
+                lines.append("")
+
+        # Check for macro explanation
+        explanation = self._find_macro_explanation(question)
+        if explanation:
+            lines.append(explanation)
+
+        # Extract what topic the user is asking about and add analysis
+        q = question.lower()
+        signals = self.extract_signals(question)
+        active_themes = [t for t, v in signals.items() if v]
+        if active_themes and not explanation:
+            theme_analysis = self._analyze_theme(active_themes[0], relevant or section_ctx or briefing)
+            if theme_analysis:
+                lines.append(theme_analysis)
+
+        # If we still have nothing, try reasoning
+        if not lines:
+            lines.append(self._reason_about_question(question, section_ctx, briefing))
+
+        # Add structural thinking
+        intuition = self._add_structural_intuition(question)
+        if intuition:
+            lines.append(intuition)
+
+        return "\n".join(lines)
+
+    def _analyze_theme(self, theme, context):
+        """Provide analysis for a given theme based on context."""
+        claims = self._extract_key_claims(context)
+        if not claims:
+            return ""
+
+        analysis_frames = {
+            "curve": "**Curve analysis:** Look at the level, slope, and curvature. "
+                     "Which sector is driving the move? Is it rate expectations or term premium?",
+            "fed": "**Fed assessment:** Key question is the reaction function — "
+                   "are they data-dependent on inflation or growth? The dot plot vs market pricing gap matters.",
+            "basis": "**Basis assessment:** Cross-currency basis reflects USD funding supply/demand. "
+                     "Quarter-end, regulatory constraints, and CB swap lines are the big drivers.",
+            "fx": "**FX framework:** Rate differentials drive short-term, current account and flows "
+                  "drive medium-term, PPP and productivity drive long-term.",
+            "vol": "**Vol assessment:** Is implied > realized? Where on the surface is the kink? "
+                   "Event risk (FOMC, data) vs structural supply/demand for hedging.",
+            "fiscal": "**Fiscal impact:** More issuance = more duration supply = term premium rises = "
+                      "long-end cheapens. Auction tails and bid-to-cover ratios signal demand.",
+            "carry": "**Carry framework:** Positive carry doesn't mean good trade — you need to "
+                     "adjust for the probability of adverse moves. Carry/vol is the right metric.",
+            "positioning": "**Positioning lens:** Extreme positioning creates fragility. "
+                          "The unwind is often faster than the buildup. Check CFTC, prime broker data.",
+        }
+        frame = analysis_frames.get(theme, "")
+        return frame
+
+    # =====================================================================
+    # REASONING HELPERS
+    # =====================================================================
+
+    def _reason_about_question(self, question, section_ctx, briefing):
+        """When we don't have a canned explanation, try to reason from the content."""
+        lines = []
+        q = question.lower()
+
+        # Pull key claims from whatever context we have
+        source = section_ctx if section_ctx else briefing
+        claims = self._extract_key_claims(source)
+
+        if claims:
+            lines.append("**Relevant context from the briefing:**")
+            # Filter claims to those most relevant to the question
+            q_words = set(q.split())
+            scored = []
+            for c in claims:
+                c_words = set(c.lower().split())
+                score = len(q_words & c_words)
+                scored.append((score, c))
+            scored.sort(key=lambda x: -x[0])
+            for _, c in scored[:5]:
+                lines.append(f"- {c}")
+
+        if not lines:
+            lines.append("I don't have enough specific context in the briefing to fully answer this. "
+                          "Can you point me to the specific section or claim you're asking about?")
+
+        return "\n".join(lines)
+
+    def _add_structural_intuition(self, question):
+        """Add brief structural macro intuition based on the question topic."""
+        q = question.lower()
+        notes = []
+
+        if "easing" in q and ("belly" in q or "5y" in q or "5s" in q):
+            notes.append(
+                "**Intuition on easing + belly:** A shallower easing cycle means the terminal rate "
+                "is higher than the market previously expected. The 5Y sector is most sensitive to "
+                "the cumulative path of policy — it sits at the junction of rate expectations (front-end) "
+                "and term premium (long-end). Fewer total cuts → 5Y rate stays higher relative to "
+                "2Y (which prices near-term cuts) and 10Y (which prices supply/term premium)."
+            )
+        elif "front end" in q and ("anchor" in q or "rate" in q):
+            notes.append(
+                "**Front-end anchoring:** When the Fed signals a clear near-term path, the 2Y rate "
+                "becomes 'anchored' — it moves mostly on changes to the NEXT 2-3 meetings of pricing. "
+                "The belly and long-end are freer to move on structural factors."
+            )
+        elif "term premium" in q:
+            notes.append(
+                "**Term premium mechanics:** It's the residual yield beyond rate expectations. "
+                "Rises with: more supply, less foreign demand, inflation uncertainty, QT. "
+                "Falls with: QE, flight-to-quality, foreign CB reserve purchases."
+            )
+        elif "positioning" in q or "crowded" in q:
+            notes.append(
+                "**Positioning risk:** When a trade is consensus and positioning is extreme, "
+                "the risk is an unwind — NOT that the fundamental thesis is wrong. "
+                "Size down or use options when CFTC data shows extreme net positioning."
+            )
+
+        return "\n".join(notes) if notes else ""
+
+    # =====================================================================
+    # SUPPLEMENTARY CONTEXT — appended concisely
+    # =====================================================================
+
+    def _build_supplementary(self, question, section_name, learned_rules,
+                              feedback_entries, knowledge_docs, insights,
+                              similar, corrections):
+        """Build supplementary context from all learning sources. Keep it brief."""
+        parts = []
+
+        # Learned rules from conversations (most important)
+        if learned_rules:
+            relevant = [r for r in learned_rules[:2]
+                        if r.get("source") == "conversation_correction"]
+            if relevant:
+                parts.append("**From past corrections:**")
+                for r in relevant:
+                    parts.append(f"- {r['rule'][:150]}")
+
+        # Relevant feedback
+        rel_fb = self._find_relevant_feedback(feedback_entries, question, section_name)
+        if rel_fb:
+            parts.append("**Your past feedback:**")
+            for fb in rel_fb[:2]:
+                note = fb.get("note", "")
+                section = fb.get("section", fb.get("trade", ""))
+                if note:
+                    label = "👍" if fb.get("rating") == "up" else "👎"
+                    parts.append(f"- {label} {section}: {note[:150]}")
+
+        # Relevant knowledge docs
+        rel_kb = self._find_relevant_knowledge(knowledge_docs, question)
+        if rel_kb:
+            parts.append("**From uploaded documents:**")
+            for doc in rel_kb[:1]:
+                summary = doc["summary"][:150] + "..." if len(doc["summary"]) > 150 else doc["summary"]
+                parts.append(f"- **{doc['title']}:** {summary}")
+
+        # Relevant insights
+        rel_ins = self._find_relevant_insights(insights, question)
+        if rel_ins:
+            parts.append("**Saved insights:**")
+            for ins in rel_ins[:2]:
+                parts.append(f"- {ins.get('insight', '')[:150]}")
+
+        # Past mistakes
+        if corrections:
+            parts.append("**⚠ Avoiding past mistake on similar question.**")
+
+        return "\n".join(parts) if parts else ""
+
+    # =====================================================================
+    # PUBLIC API
     # =====================================================================
 
     def ask(self, briefing_content: str, section_context: str,
             question: str, chat_history: list) -> str:
-        """
-        Main entry point. Returns the full response text.
-        Called by the /api/chat route in app.py.
-        """
         answer = self.generate_response(
             briefing_content, section_context, question, chat_history
         )
-        # Store interaction
-        combined = f"{briefing_content}\n{section_context}\n{question}"
-        signals = self.extract_signals(combined)
-        regime, _ = self.infer_regime(signals)
-
         section_name = ""
         if section_context:
             first_line = section_context.strip().split("\n")[0]
-            section_name = first_line.replace("##", "").strip()
+            section_name = first_line.replace("##", "").replace("###", "").strip()
+
+        # Extract signals only from the question + section (NOT the full briefing)
+        q_signals = self.extract_signals(f"{section_context}\n{question}")
+        regime = "general"
+        for theme, active in q_signals.items():
+            if active:
+                regime = theme
+                break
 
         self.store_interaction(
             {"section": section_name, "regime": regime},
@@ -1006,12 +969,10 @@ class MacroLLM:
         return answer
 
     def give_feedback(self, feedback: str) -> str:
-        """Record feedback on the last interaction. feedback = 'good' or 'bad'."""
         self.record_feedback(feedback)
         return "Feedback recorded and applied."
 
     def override_regime(self, signal_context: dict, correct_regime: str):
-        """Allow user to correct regime detection permanently."""
         key = correct_regime.lower().replace(" ", "_")
         self.memory["regime_overrides"][key] = {
             "signals": signal_context,
@@ -1025,7 +986,6 @@ class MacroLLM:
 _instance = None
 
 def get_macro_llm() -> MacroLLM:
-    """Get or create the singleton MacroLLM instance."""
     global _instance
     if _instance is None:
         _instance = MacroLLM()

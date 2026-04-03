@@ -21,6 +21,7 @@ from flask import (
 from werkzeug.utils import secure_filename
 from apscheduler.schedulers.background import BackgroundScheduler
 
+import data_access as db
 import briefing as briefing_module
 from macro_llm import get_macro_llm
 
@@ -28,20 +29,11 @@ app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", os.urandom(24))
 app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024  # 10 MB max upload
 
-# ── Paths ──────────────────────────────────────────────────────────────────────
-DATA_DIR       = Path(__file__).parent / "data"
-BRIEFINGS_DIR  = DATA_DIR / "briefings"
-FEEDBACK_FILE  = DATA_DIR / "feedback.json"
-PAUSE_FILE     = DATA_DIR / ".paused"
-KNOWLEDGE_DIR  = DATA_DIR / "knowledge"
-CHATS_DIR      = DATA_DIR / "chats"
-INSIGHTS_FILE  = DATA_DIR / "insights.json"
-USERS_FILE     = DATA_DIR / "users.json"
-INVITES_FILE   = DATA_DIR / "invites.json"
-DATA_DIR.mkdir(exist_ok=True)
-BRIEFINGS_DIR.mkdir(exist_ok=True)
-KNOWLEDGE_DIR.mkdir(parents=True, exist_ok=True)
-CHATS_DIR.mkdir(exist_ok=True)
+# ── Paths (from shared data_access) ───────────────────────────────────────────
+# All path constants and mkdir calls are in data_access.py.
+# Local aliases for the few places that need direct path access:
+BRIEFINGS_DIR = db.BRIEFINGS_DIR
+KNOWLEDGE_DIR = db.KNOWLEDGE_DIR
 
 # ── Auth ───────────────────────────────────────────────────────────────────────
 ADMIN_PASSWORD = os.environ.get("APP_PASSWORD", "changeme")
@@ -51,22 +43,16 @@ def hash_password(pw: str) -> str:
     return hashlib.sha256(pw.encode()).hexdigest()
 
 def load_users() -> dict:
-    if not USERS_FILE.exists():
-        return {}
-    with open(USERS_FILE) as f:
-        return json.load(f)
+    return db.load_users()
 
 def save_users(data: dict):
-    USERS_FILE.write_text(json.dumps(data, indent=2))
+    db.save_users(data)
 
 def load_invites() -> dict:
-    if not INVITES_FILE.exists():
-        return {}
-    with open(INVITES_FILE) as f:
-        return json.load(f)
+    return db.load_invites()
 
 def save_invites(data: dict):
-    INVITES_FILE.write_text(json.dumps(data, indent=2))
+    db.save_invites(data)
 
 def login_required(f):
     @wraps(f)
@@ -245,38 +231,42 @@ def api_me():
 # ── Helpers ────────────────────────────────────────────────────────────────────
 def get_status():
     today = date.today().strftime("%Y-%m-%d")
-    briefings = sorted(BRIEFINGS_DIR.glob("macro-briefing-*.md"), reverse=True)
+    briefings = db.list_briefings()
     return {
-        "paused": PAUSE_FILE.exists(),
-        "today_done": (BRIEFINGS_DIR / f"macro-briefing-{today}.md").exists(),
+        "paused": db.is_paused(),
+        "today_done": db.briefing_exists(today),
         "today_date": today,
         "briefing_count": len(briefings),
-        "latest_briefing": briefings[0].name if briefings else None,
+        "latest_briefing": briefings[0] if briefings else None,
     }
 
 def load_feedback():
-    if not FEEDBACK_FILE.exists():
-        return {}
-    with open(FEEDBACK_FILE) as f:
-        return json.load(f)
+    return db.load_feedback()
 
 def save_feedback_data(data):
-    FEEDBACK_FILE.write_text(json.dumps(data, indent=2))
+    db.save_feedback(data)
 
 def list_briefings():
-    return [f.name for f in sorted(BRIEFINGS_DIR.glob("macro-briefing-*.md"), reverse=True)]
+    return db.list_briefings()
 
 # ── Generation (streaming via SSE) ────────────────────────────────────────────
-_gen_lock = threading.Lock()  # only one generation at a time
+_gen_lock = threading.Lock()  # prevent concurrent generation (API cost + file corruption)
 
 @app.route("/api/generate", methods=["GET"])
 @admin_required
 def api_generate():
-    if PAUSE_FILE.exists():
+    if db.is_paused():
         def paused():
             yield "data: Briefings are paused. Resume in Settings.\n\n"
             yield "data: __DONE_ERROR__\n\n"
         return Response(paused(), mimetype="text/event-stream",
+                        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    if not _gen_lock.acquire(blocking=False):
+        def already_running():
+            yield "data: A briefing is already being generated. Please wait.\n\n"
+            yield "data: __DONE_ERROR__\n\n"
+        return Response(already_running(), mimetype="text/event-stream",
                         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
     today = date.today().strftime("%Y-%m-%d")
@@ -293,6 +283,8 @@ def api_generate():
             q.put(("done", output_file.name))
         except Exception as e:
             q.put(("error", str(e)))
+        finally:
+            _gen_lock.release()
 
     t = threading.Thread(target=run, daemon=True)
     t.start()
@@ -362,15 +354,13 @@ def api_delete_today():
 @app.route("/api/pause", methods=["POST"])
 @admin_required
 def api_pause():
-    reason = (request.json or {}).get("reason", f"Paused {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-    PAUSE_FILE.write_text(reason)
+    db.set_paused(True)
     return jsonify({"ok": True})
 
 @app.route("/api/resume", methods=["POST"])
 @admin_required
 def api_resume():
-    if PAUSE_FILE.exists():
-        PAUSE_FILE.unlink()
+    db.set_paused(False)
     return jsonify({"ok": True})
 
 @app.route("/api/feedback", methods=["GET"])
@@ -584,24 +574,16 @@ def api_delete_document(doc_id):
 # ── Chat / Q&A on briefings ───────────────────────────────────────────────────
 
 def load_chat_history(briefing_date: str) -> list:
-    chat_file = CHATS_DIR / f"{briefing_date}.json"
-    if not chat_file.exists():
-        return []
-    with open(chat_file) as f:
-        return json.load(f)
+    return db.load_chat_history(briefing_date)
 
 def save_chat_history(briefing_date: str, messages: list):
-    chat_file = CHATS_DIR / f"{briefing_date}.json"
-    chat_file.write_text(json.dumps(messages, indent=2))
+    db.save_chat_history(briefing_date, messages)
 
 def load_insights() -> list:
-    if not INSIGHTS_FILE.exists():
-        return []
-    with open(INSIGHTS_FILE) as f:
-        return json.load(f)
+    return db.load_insights()
 
 def save_insights(insights: list):
-    INSIGHTS_FILE.write_text(json.dumps(insights, indent=2))
+    db.save_insights(insights)
 
 @app.route("/api/chat/history/<briefing_date>")
 @admin_required
@@ -644,13 +626,13 @@ def api_chat():
                 chat_history=chat_history,
             )
 
-            # Simulate streaming by chunking the response word-by-word
-            # This keeps the frontend SSE experience identical
-            words = full_response.split(" ")
-            for i, word in enumerate(words):
-                chunk = word if i == 0 else " " + word
+            # Stream by line with brief pauses — keeps the frontend UX
+            # but doesn't block threads as long as word-by-word
+            lines = full_response.split("\n")
+            for i, line in enumerate(lines):
+                chunk = line if i == 0 else "\n" + line
                 yield f"data: {json.dumps({'chunk': chunk})}\n\n"
-                time.sleep(0.015)  # slight delay for natural feel
+                time.sleep(0.02)
 
             # Save to chat history
             chat_history.append({"role": "user", "content": user_message, "ts": datetime.now().strftime("%H:%M")})
@@ -715,16 +697,15 @@ def api_delete_insight(idx):
 
 # ── Scheduler (auto-generate at 6 AM ET Mon-Fri) ──────────────────────────────
 def scheduled_generate():
-    if PAUSE_FILE.exists():
+    if db.is_paused():
         return
     today = date.today().strftime("%Y-%m-%d")
-    output_file = BRIEFINGS_DIR / f"macro-briefing-{today}.md"
-    if output_file.exists():
+    if db.briefing_exists(today):
         return
     try:
         text = briefing_module.generate_briefing()
-        output_file.write_text(text)
-        print(f"[scheduler] Briefing generated: {output_file.name}")
+        db.write_briefing(today, text)
+        print(f"[scheduler] Briefing generated: macro-briefing-{today}.md")
     except Exception as e:
         print(f"[scheduler] Generation failed: {e}")
 

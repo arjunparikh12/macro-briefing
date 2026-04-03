@@ -7,8 +7,9 @@ import os
 import json
 import requests
 from datetime import date
-from pathlib import Path
 from anthropic import Anthropic
+
+import data_access as db
 
 client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 BRAVE_API_KEY = os.environ.get("BRAVE_API_KEY", "")
@@ -223,28 +224,13 @@ def gather_news() -> str:
 
 
 def load_knowledge_base() -> str:
-    """Load pre-processed document summaries from data/knowledge/ and format for prompt injection.
-    Documents are summarized ONCE at upload time (not on every briefing call).
-    Only active documents are included. Returns empty string if no docs uploaded."""
-    kb_dir = Path(__file__).parent / "data" / "knowledge"
-    if not kb_dir.exists():
-        return ""
-    tactical, guides, reference = [], [], []
-    for f in sorted(kb_dir.glob("*.json")):
-        try:
-            with open(f) as fp:
-                doc = json.load(fp)
-            if doc.get("active", True) and doc.get("summary"):
-                entry = f"#### {doc.get('title', f.stem)}\n{doc['summary']}"
-                dt = doc.get("doc_type", "guide")
-                if dt == "tactical":
-                    tactical.append(entry)
-                elif dt == "reference":
-                    reference.append(entry)
-                else:
-                    guides.append(entry)
-        except Exception:
-            continue
+    """Load pre-processed document summaries and format for prompt injection.
+    Uses shared data_access to read docs. Returns empty string if no docs."""
+    docs = db.load_knowledge_docs()
+    tactical = [f"#### {d['title']}\n{d['summary']}" for d in docs.get("tactical", [])]
+    guides   = [f"#### {d['title']}\n{d['summary']}" for d in docs.get("guide", [])]
+    reference = [f"#### {d['title']}\n{d['summary']}" for d in docs.get("reference", [])]
+
     if not tactical and not guides and not reference:
         return ""
     parts = ["\n## Knowledge Base (from uploaded documents)\n"]
@@ -275,12 +261,8 @@ def load_knowledge_base() -> str:
 
 
 def load_feedback_summary() -> str:
-    """Load feedback from data/feedback.json and format for prompt injection."""
-    feedback_path = os.path.join(os.path.dirname(__file__), "data", "feedback.json")
-    if not os.path.exists(feedback_path):
-        return ""
-    with open(feedback_path) as f:
-        data = json.load(f)
+    """Load feedback and format for prompt injection. Uses shared data_access."""
+    data = db.load_feedback()
     if not data:
         return ""
 
@@ -341,12 +323,8 @@ def load_feedback_summary() -> str:
 
 
 def load_insights() -> str:
-    """Load saved insights from chat conversations — these are permanent lessons learned."""
-    insights_path = os.path.join(os.path.dirname(__file__), "data", "insights.json")
-    if not os.path.exists(insights_path):
-        return ""
-    with open(insights_path) as f:
-        data = json.load(f)
+    """Load saved insights and format for prompt injection. Uses shared data_access."""
+    data = db.load_insights()
     if not data:
         return ""
     lines = ["\n## Lessons from Past Conversations (apply these permanently)\n"
@@ -361,13 +339,8 @@ def load_macro_llm_learnings() -> str:
     """Load learnings extracted from MacroLLM conversations.
     These are auto-extracted corrections, teachings, and patterns from Arjun's
     interactive Q&A sessions. They bridge conversation learning → briefing generation."""
-    learnings_path = os.path.join(os.path.dirname(__file__), "data", "macro_llm_learnings.json")
-    if not os.path.exists(learnings_path):
-        return ""
-    try:
-        with open(learnings_path) as f:
-            data = json.load(f)
-    except Exception:
+    data = db.load_llm_learnings()
+    if not data:
         return ""
 
     parts = []

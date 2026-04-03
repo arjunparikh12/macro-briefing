@@ -65,7 +65,11 @@ class MacroLLM:
             "section": context.get("section", ""),
             "regime": context.get("regime", ""),
         })
+        # Auto-extract learned rules from user statements (corrections, teachings)
+        self._extract_learned_rules(question, context)
         self._save_memory()
+        # Sync learnings to briefing.py-readable file after every interaction
+        self._sync_learnings_to_briefing()
 
     def record_feedback(self, feedback: str):
         """feedback = 'good' or 'bad' on the last interaction."""
@@ -83,7 +87,66 @@ class MacroLLM:
                 "bad_answer": last["answer"],
                 "section": last.get("section", ""),
             })
+        # If good feedback, extract the Q&A as a positive learned rule
+        if feedback == "good" and last.get("question"):
+            self.memory["learned_rules"].append({
+                "timestamp": last["timestamp"],
+                "rule": f"Good reasoning pattern — Q: {last['question'][:200]} → A: {last['answer'][:200]}",
+                "source": "positive_feedback",
+                "section": last.get("section", ""),
+            })
         self._save_memory()
+        # Sync learned rules to briefing-accessible file
+        self._sync_learnings_to_briefing()
+
+    def _extract_learned_rules(self, user_message: str, context: dict):
+        """Auto-extract factual corrections and preferences from user statements."""
+        msg = user_message.lower()
+        rules = self.memory.setdefault("learned_rules", [])
+
+        # Detect correction patterns — user is teaching the LLM something
+        correction_markers = [
+            "actually", "no,", "wrong", "incorrect", "that's not right",
+            "it's actually", "the real", "should be", "is actually",
+            "you're wrong", "thats wrong", "not correct", "the correct",
+            "remember that", "keep in mind", "important:", "note:",
+            "i think", "my view is", "the way i see it",
+            "the fed is", "ecb is", "boj is", "boe is",
+            "rates are", "basis is", "the curve is",
+        ]
+
+        is_teaching = any(marker in msg for marker in correction_markers)
+        if is_teaching and len(user_message) > 20:
+            rules.append({
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "rule": user_message[:500],
+                "source": "conversation_correction",
+                "section": context.get("section", ""),
+            })
+            # Keep bounded
+            if len(rules) > 300:
+                self.memory["learned_rules"] = rules[-300:]
+
+    def _sync_learnings_to_briefing(self):
+        """Write conversation learnings to a file that briefing.py can read.
+        This bridges MacroLLM memory → Claude briefing generation without any API calls."""
+        learnings_path = DATA_DIR / "macro_llm_learnings.json"
+        try:
+            # Collect all learning sources
+            learnings = {
+                "last_synced": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "learned_rules": self.memory.get("learned_rules", [])[-100:],
+                "trade_corrections": self.memory.get("trade_corrections", [])[-50:],
+                "regime_overrides": self.memory.get("regime_overrides", {}),
+                "good_patterns": [
+                    i for i in self.memory.get("interactions", [])[-200:]
+                    if i.get("feedback") == "good"
+                ][-30:],
+                "stats": self.memory.get("patterns", {}),
+            }
+            learnings_path.write_text(json.dumps(learnings, indent=2))
+        except Exception:
+            pass
 
     # =====================================================================
     # LOAD APP CONTEXT — pull in everything the app knows
@@ -469,7 +532,9 @@ class MacroLLM:
 
     def generate_response(self, briefing_content: str, section_context: str,
                           question: str, chat_history: list) -> str:
-        """Generate a response using deterministic macro reasoning."""
+        """Generate a response using deterministic macro reasoning.
+        Pulls from ALL learning sources: briefing, feedback, insights, knowledge docs,
+        conversation memory, learned rules, and current chat history."""
 
         # 1. Extract signals from briefing + section + question
         combined_text = f"{briefing_content}\n{section_context}\n{question}"
@@ -496,10 +561,16 @@ class MacroLLM:
         similar = self.retrieve_similar(question, section_name)
         corrections = self.retrieve_corrections(question)
 
-        # 7. Load insights for context
+        # 7. Load ALL app context — insights, feedback, knowledge docs, learned rules
         insights = self._load_insights()
+        feedback_entries = self._load_feedback()
+        knowledge_docs = self._load_knowledge_docs()
+        learned_rules = self._get_relevant_learned_rules(question, section_name)
 
-        # 8. Build response based on question type
+        # 8. Parse conversation context — what has the user been saying in this chat?
+        conv_context = self._parse_chat_history(chat_history, question)
+
+        # 9. Build response based on question type
         response_parts = []
 
         # Always start with the regime read
@@ -531,19 +602,48 @@ class MacroLLM:
             response_parts.append(self._general_response(regime, cross_asset, pnl,
                                                           signals, section_context))
 
+        # Inject relevant knowledge from uploaded docs
+        relevant_kb = self._find_relevant_knowledge(knowledge_docs, question, section_name)
+        if relevant_kb:
+            response_parts.append("\n**From uploaded documents:**")
+            for doc in relevant_kb[:2]:
+                # Truncate long summaries
+                summary = doc["summary"][:200] + "..." if len(doc["summary"]) > 200 else doc["summary"]
+                response_parts.append(f"- [{doc['doc_type'].upper()}] **{doc['title']}:** {summary}")
+
+        # Inject relevant feedback history
+        relevant_fb = self._find_relevant_feedback(feedback_entries, question, section_name)
+        if relevant_fb:
+            response_parts.append("\n**From your briefing feedback:**")
+            for fb in relevant_fb[:3]:
+                label = "GOOD" if fb.get("rating") == "up" else "IMPROVE"
+                note = fb.get("note", "")
+                section = fb.get("section", fb.get("trade", ""))
+                if note:
+                    response_parts.append(f"- [{fb.get('date','')}] {label} {section}: {note}")
+
+        # Inject learned rules from past conversations
+        if learned_rules:
+            response_parts.append("\n**Learned from past conversations:**")
+            for rule in learned_rules[:3]:
+                response_parts.append(f"- {rule['rule'][:200]}")
+
         # Add insight context if relevant
         relevant_insights = self._find_relevant_insights(insights, question)
         if relevant_insights:
-            response_parts.append("\n**From past conversations:**")
+            response_parts.append("\n**Saved insights:**")
             for ins in relevant_insights[:2]:
                 response_parts.append(f"- {ins.get('insight', '')}")
+
+        # Add conversation thread context
+        if conv_context:
+            response_parts.append(f"\n**Thread context:** {conv_context}")
 
         # Add similar past thinking
         if similar:
             response_parts.append("\n**Similar past thinking:**")
             for s in similar[:2]:
                 response_parts.append(f"- Q: {s['question']}")
-                # Truncate long answers
                 ans = s.get("answer", "")
                 if len(ans) > 150:
                     ans = ans[:150] + "..."
@@ -556,6 +656,92 @@ class MacroLLM:
                 response_parts.append(f"- Previously gave a bad answer to: '{c['question'][:100]}'")
 
         return "\n\n".join(response_parts)
+
+    # =====================================================================
+    # CONTEXT PARSERS — extract relevant info from app data
+    # =====================================================================
+
+    def _parse_chat_history(self, chat_history: list, current_question: str) -> str:
+        """Extract relevant context from the current conversation thread."""
+        if not chat_history:
+            return ""
+        # Look at what the user has been discussing in this session
+        user_msgs = [m["content"] for m in chat_history[-10:] if m.get("role") == "user"]
+        if not user_msgs:
+            return ""
+        # Build a thread summary: what themes has the user been asking about?
+        all_text = " ".join(user_msgs)
+        thread_signals = self.extract_signals(all_text)
+        active_themes = [k for k, v in thread_signals.items() if v]
+        if not active_themes:
+            return ""
+        return f"This conversation has covered: {', '.join(active_themes)}. Building on {len(user_msgs)} prior messages."
+
+    def _get_relevant_learned_rules(self, question: str, section: str) -> list:
+        """Find learned rules relevant to the current question."""
+        rules = self.memory.get("learned_rules", [])
+        if not rules:
+            return []
+        q_words = set(question.lower().split())
+        results = []
+        for rule in rules:
+            rule_text = rule.get("rule", "").lower()
+            r_words = set(rule_text.split())
+            score = len(q_words & r_words)
+            # Boost if same section
+            if section and rule.get("section", "") == section:
+                score += 2
+            # Boost corrections over positive patterns
+            if rule.get("source") == "conversation_correction":
+                score += 1
+            if score > 2:
+                results.append((score, rule))
+        results.sort(key=lambda x: -x[0])
+        return [r[1] for r in results[:5]]
+
+    def _find_relevant_knowledge(self, docs: dict, question: str, section: str) -> list:
+        """Find uploaded knowledge docs relevant to the question."""
+        q_words = set(question.lower().split())
+        results = []
+        for doc_type, doc_list in docs.items():
+            for doc in doc_list:
+                title_words = set(doc["title"].lower().split())
+                summary_words = set(doc["summary"].lower().split()[:100])  # first 100 words
+                score = len(q_words & title_words) * 3 + len(q_words & summary_words)
+                # Boost tactical docs for trade questions
+                if doc_type == "tactical" and any(w in question.lower() for w in ["trade", "idea", "position"]):
+                    score += 3
+                if score > 3:
+                    results.append((score, doc))
+        results.sort(key=lambda x: -x[0])
+        return [r[1] for r in results[:3]]
+
+    def _find_relevant_feedback(self, feedback_entries: list, question: str, section: str) -> list:
+        """Find feedback entries relevant to the current question/section."""
+        results = []
+        q_lower = question.lower()
+        for entry in feedback_entries:
+            score = 0
+            entry_section = entry.get("section", "")
+            entry_trade = entry.get("trade", "")
+            entry_note = entry.get("note", "")
+            # Direct section match
+            if section and entry_section and section.lower() in entry_section.lower():
+                score += 5
+            # Keyword overlap with note
+            if entry_note:
+                note_words = set(entry_note.lower().split())
+                q_words = set(q_lower.split())
+                score += len(q_words & note_words)
+            # Trade keyword overlap
+            if entry_trade:
+                trade_words = set(entry_trade.lower().split())
+                q_words = set(q_lower.split())
+                score += len(q_words & trade_words)
+            if score > 2 and (entry.get("rating") or entry.get("note")):
+                results.append((score, entry))
+        results.sort(key=lambda x: -x[0])
+        return [r[1] for r in results[:5]]
 
     # =====================================================================
     # RESPONSE BUILDERS BY QUESTION TYPE

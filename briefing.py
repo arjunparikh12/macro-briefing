@@ -357,7 +357,61 @@ def load_insights() -> str:
     return "\n".join(lines) + "\n"
 
 
-def build_prompt(today: str, now_str: str, news: str, feedback: str, knowledge: str = "", insights: str = "") -> str:
+def load_macro_llm_learnings() -> str:
+    """Load learnings extracted from MacroLLM conversations.
+    These are auto-extracted corrections, teachings, and patterns from Arjun's
+    interactive Q&A sessions. They bridge conversation learning → briefing generation."""
+    learnings_path = os.path.join(os.path.dirname(__file__), "data", "macro_llm_learnings.json")
+    if not os.path.exists(learnings_path):
+        return ""
+    try:
+        with open(learnings_path) as f:
+            data = json.load(f)
+    except Exception:
+        return ""
+
+    parts = []
+
+    # Corrections from conversations — highest priority
+    corrections = data.get("learned_rules", [])
+    conv_corrections = [r for r in corrections if r.get("source") == "conversation_correction"]
+    if conv_corrections:
+        parts.append("\n## Corrections from Interactive Q&A (apply strictly)")
+        parts.append("Arjun corrected the Macro LLM on these points. Apply these permanently:\n")
+        for rule in conv_corrections[-30:]:
+            parts.append(f"- [{rule.get('timestamp', '')}] {rule.get('rule', '')}")
+
+    # Trade corrections — things that were wrong
+    trade_corr = data.get("trade_corrections", [])
+    if trade_corr:
+        parts.append("\n## Trade Logic Errors to Avoid")
+        parts.append("The Macro LLM gave these bad answers — do NOT repeat this reasoning:\n")
+        for tc in trade_corr[-10:]:
+            parts.append(f"- [{tc.get('timestamp', '')}] Bad answer to: {tc.get('question', '')[:150]}")
+
+    # Good patterns — things Arjun approved
+    good = data.get("good_patterns", [])
+    if good:
+        parts.append("\n## Validated Reasoning Patterns (Arjun approved these)")
+        parts.append("These Q&A exchanges were marked as good. Build on this reasoning:\n")
+        for g in good[-10:]:
+            q = g.get("question", "")[:100]
+            a = g.get("answer", "")[:150]
+            parts.append(f"- Q: {q}\n  A: {a}")
+
+    # Regime overrides — user corrections to regime detection
+    overrides = data.get("regime_overrides", {})
+    if overrides:
+        parts.append("\n## Regime Detection Corrections")
+        for key, val in overrides.items():
+            parts.append(f"- Correct regime: {val.get('regime', '')} (as of {val.get('timestamp', '')})")
+
+    if not parts:
+        return ""
+    return "\n".join(parts) + "\n"
+
+
+def build_prompt(today: str, now_str: str, news: str, feedback: str, knowledge: str = "", insights: str = "", llm_learnings: str = "") -> str:
     return f"""You are generating a macro briefing for Arjun Parikh, a QIS structurer at JPMorgan.
 
 Today's date: {today}
@@ -500,7 +554,8 @@ or trades copied from Arjun's historical trade log above.]
 - FX and rates sections equal in depth
 - Cross-currency basis section is always present and always has at least one actionable observation
 {feedback}
-{insights}"""
+{insights}
+{llm_learnings}"""
 
 
 def generate_briefing(stream_callback=None) -> str:
@@ -526,7 +581,8 @@ def generate_briefing(stream_callback=None) -> str:
     feedback = load_feedback_summary()
     knowledge = load_knowledge_base()
     insights = load_insights()
-    prompt = build_prompt(today, now_str, news, feedback, knowledge, insights)
+    llm_learnings = load_macro_llm_learnings()
+    prompt = build_prompt(today, now_str, news, feedback, knowledge, insights, llm_learnings)
 
     full_text = ""
     with client.messages.stream(

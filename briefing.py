@@ -29,9 +29,8 @@ SEARCH_QUERIES = [
     "swap spreads treasury spreads",
 ]
 
-# ── Trusted news sources — ONLY these domains are searched ────────────────────
-# Major financial news, general news, and central bank official sites.
-TRUSTED_DOMAINS = [
+# ── Preferred sources — searched first to prioritize quality ──────────────────
+PREFERRED_DOMAINS = [
     # Financial news
     "bloomberg.com",
     "reuters.com",
@@ -43,7 +42,7 @@ TRUSTED_DOMAINS = [
     "foxnews.com",
     "foxbusiness.com",
     "washingtonpost.com",
-    # Central banks
+    # Central banks & government
     "federalreserve.gov",
     "ecb.europa.eu",
     "bankofengland.co.uk",
@@ -53,6 +52,31 @@ TRUSTED_DOMAINS = [
     "snb.ch",
     "bankofcanada.ca",
     "riksbank.se",
+    "treasury.gov",
+    "bls.gov",
+    "bea.gov",
+    "imf.org",
+    "worldbank.org",
+]
+
+# ── Blocked domains — known unreliable, clickbait, or stale-data sources ─────
+BLOCKED_DOMAINS = [
+    "zerohedge.com",
+    "seekingalpha.com",
+    "investopedia.com",  # educational, not news — often outdated examples
+    "thebalance.com",
+    "motleyfool.com",
+    "fool.com",
+    "benzinga.com",
+    "talkmarkets.com",
+    "gurufocus.com",
+    "yahoo.com",          # aggregator, often stale cached data
+    "msn.com",            # aggregator
+    "reddit.com",
+    "quora.com",
+    "wikipedia.org",      # not a news source
+    "medium.com",
+    "substack.com",
 ]
 
 # ─── ARJUN'S TRADING FRAMEWORK ────────────────────────────────────────────────
@@ -207,21 +231,10 @@ NEVER guess or use stale information from this framework for current levels.
 """
 
 
-def _build_site_filter() -> str:
-    """Build a 'site:x OR site:y' query suffix from TRUSTED_DOMAINS."""
-    return " OR ".join(f"site:{d}" for d in TRUSTED_DOMAINS)
-
-
-def brave_search(query: str, count: int = 8) -> list[dict]:
-    """Search using Brave Search API — restricted to TRUSTED_DOMAINS only.
-    Returns list of {title, url, description}."""
+def _brave_raw_search(query: str, count: int = 8) -> list[dict]:
+    """Execute a single Brave Search API call. Returns raw results."""
     if not BRAVE_API_KEY:
         return []
-
-    # Append site filter so Brave only returns results from trusted sources
-    site_filter = _build_site_filter()
-    filtered_query = f"({query}) ({site_filter})"
-
     try:
         r = requests.get(
             "https://api.search.brave.com/res/v1/web/search",
@@ -230,25 +243,70 @@ def brave_search(query: str, count: int = 8) -> list[dict]:
                 "Accept-Encoding": "gzip",
                 "X-Subscription-Token": BRAVE_API_KEY,
             },
-            params={"q": filtered_query, "count": count, "freshness": "pd"},
+            params={"q": query, "count": count, "freshness": "pd"},
             timeout=10,
         )
         r.raise_for_status()
-        results = r.json().get("web", {}).get("results", [])
+        return r.json().get("web", {}).get("results", [])
+    except Exception:
+        return []
 
-        # Double-check: only return results whose URL matches a trusted domain
-        trusted = []
-        for res in results:
-            url = res.get("url", "").lower()
-            if any(domain in url for domain in TRUSTED_DOMAINS):
-                trusted.append({
-                    "title": res.get("title", ""),
-                    "url": res.get("url", ""),
-                    "description": res.get("description", ""),
-                })
-        return trusted
-    except Exception as e:
-        return [{"title": "Search error", "url": "", "description": str(e)}]
+
+def _is_blocked(url: str) -> bool:
+    """Check if a URL belongs to a blocked domain."""
+    url_lower = url.lower()
+    return any(domain in url_lower for domain in BLOCKED_DOMAINS)
+
+
+def _is_preferred(url: str) -> bool:
+    """Check if a URL belongs to a preferred domain."""
+    url_lower = url.lower()
+    return any(domain in url_lower for domain in PREFERRED_DOMAINS)
+
+
+def brave_search(query: str, count: int = 5) -> list[dict]:
+    """Search using Brave Search API.
+    Strategy: search preferred sources first, then do a general search.
+    Block known junk domains. Preferred results are listed first."""
+    if not BRAVE_API_KEY:
+        return []
+
+    all_results = []
+    seen_urls = set()
+
+    # 1. Preferred-source search: add site: filters for top sources
+    #    (only the biggest 4 — too many site: filters can hurt Brave results)
+    top_sites = "site:bloomberg.com OR site:reuters.com OR site:wsj.com OR site:ft.com"
+    preferred_results = _brave_raw_search(f"({query}) ({top_sites})", count=count)
+    for res in preferred_results:
+        url = res.get("url", "")
+        if url not in seen_urls and not _is_blocked(url):
+            seen_urls.add(url)
+            all_results.append({
+                "title": res.get("title", ""),
+                "url": url,
+                "description": res.get("description", ""),
+                "preferred": True,
+            })
+
+    # 2. General search (no site filter) — fills in gaps from other sources
+    general_results = _brave_raw_search(query, count=count)
+    for res in general_results:
+        url = res.get("url", "")
+        if url not in seen_urls and not _is_blocked(url):
+            seen_urls.add(url)
+            all_results.append({
+                "title": res.get("title", ""),
+                "url": url,
+                "description": res.get("description", ""),
+                "preferred": _is_preferred(url),
+            })
+
+    # 3. Sort: preferred sources first, then others
+    all_results.sort(key=lambda r: (0 if r["preferred"] else 1))
+
+    return [{"title": r["title"], "url": r["url"], "description": r["description"]}
+            for r in all_results[:count]]
 
 
 def gather_news() -> str:

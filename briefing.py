@@ -32,7 +32,15 @@ SEARCH_QUERIES = [
 # Extracted from: trades2025.docx.pdf (discretionary trade log) and
 # Caxton APM Investment Strategy.pdf (systematic xccy basis signal writeup)
 ARJUN_FRAMEWORK = """
-## ARJUN'S TRADING FRAMEWORK — Use this as a MENTAL MODEL, not a trade list.
+## ARJUN'S TRADING FRAMEWORK — Timeless thinking patterns. NOT current market data.
+
+### FACTUAL DATA HIERARCHY — THIS IS THE MOST IMPORTANT RULE
+This framework was written in early 2025. It contains NO current market data.
+For ALL factual claims (rate levels, policy stance, market pricing, CB actions, etc.),
+you MUST use ONLY the live news search results below. If the framework mentions a macro
+regime (e.g. "Fed on hold") and the live news says something different, THE LIVE NEWS IS
+CORRECT AND THE FRAMEWORK IS STALE. Never cite rate levels, policy stances, or market
+pricing from this framework section — only from the live search results.
 
 ### WHO YOU ARE WRITING FOR
 Arjun Parikh is a QIS structurer at JPMorgan focused on rates, FX, and cross-currency basis.
@@ -40,90 +48,68 @@ He runs both systematic and discretionary strategies. He thinks in terms of RV, 
 term premium, funding risk premia, and macro regime shifts. He is NOT a directional macro tourist —
 every trade has a clean structural rationale, a carry/roll component, and a risk management logic.
 
-### CRITICAL INSTRUCTION — READ THIS FIRST
-The trade history and signal frameworks below are THINKING TEMPLATES, not a menu of trades to recommend.
-DO NOT regurgitate or re-suggest specific trades from his log (e.g. "receive greens in Reds/Greens/Blues fly"
-or "pay 2Y SONIA/SOFR basis"). Those trades were context-specific to the date they were put on.
-Instead, understand the INTUITION behind each archetype (why that structure? what was the macro setup?)
-and apply that same style of thinking to WHATEVER the current macro environment presents.
-Your job is original synthesis: map his frameworks onto today's news and data to generate FRESH ideas
-that Arjun hasn't already thought of. He already knows his own trade log — repeating it back adds zero value.
-
 ---
 
-### PART 1: DISCRETIONARY TRADE ARCHETYPES (for intuition — NOT a trade recommendation list)
-(Derived from his 2025 trade log. These illustrate HOW he thinks, not WHAT to trade today.)
+### PART 1: TRADE ARCHETYPES (structure types he uses — NOT specific trades)
 
-**Core Trade Archetypes (understand the reasoning pattern, not the specific trade):**
+**1. Rates Curve RV (bread and butter):**
+   - Butterflies: e.g. 2s/Xs/30s belly-cheapening flies — weighted to isolate term premium
+   - Always specify risk weights (e.g. 0.50:-1.0:0.65 style). Duration-neutral or risk-weighted.
+   - Think: which part of the curve is too rich/cheap vs historical RV?
 
-1. **Rates Curve RV (bread and butter):**
-   - Butterflies: e.g. 2s/7s/30s belly-cheapening flies (pay belly, receive wings, weighted ~0.50:-1.0:0.65)
-   - Weighted to isolate term premium or duration-neutral carry. Always specify risk weights.
-   - Example rationale: "term premium rise in a selloff" - uses conditional bear structure
+**2. Forward Swap Curve Flatteners/Steepeners:**
+   - Expresses CB path views without outright duration risk
+   - Structure: pay NxM vs receive NxK (weighted) — isolates the forward rate view
+   - Money market curve RV: slopes like 6Mx3M / 3Mx1Y / 9Mx3M — positional RV, not outright
 
-2. **Forward Swap Curve Flatteners/Steepeners:**
-   - Expresses FOMC path views without outright duration risk
-   - e.g. Pay 2Yx1Y vs receive 2Yx3Y plus 6Mx10Y (weighted 40:80) -- Fed on hold rangebound
-   - e.g. Z5/Z6, U5/U6 SOFR futures flatteners -- when near-term easing is overpriced vs later cuts
-   - Money market curve RV: 6Mx3M / 3Mx1Y / 9Mx3M / 21Mx3M slopes -- positional RV, not outright
-
-3. **SOFR Futures Curve Trades:**
+**3. SOFR Futures Curve Trades:**
    - Contract month RV: Reds/Greens/Blues flies (PCA cheapness/richness)
-   - e.g. Receive greens in Reds/Greens/Blues 5050 fly -- carry efficient, greens cheap on PCA
-   - Z5/Z7, Z5/Z6, U5/U6 flatteners when near-term cuts overpriced vs deferred
-   - "Sell wings of Z6Z7Z8 1:2:1 fly" = low-beta short duration proxy
+   - Calendar spread flatteners/steepeners when near-term pricing diverges from deferred
+   - Use CURRENT contract months (check what is active today), not expired ones
 
-4. **Conditional Structures (midcurve options, payer ratios, receiver spreads):**
+**4. Conditional Structures (midcurve options, payer ratios, receiver spreads):**
    - Midcurve payers/receivers to express directional views with limited premium
-   - e.g. Greens/Golds conditional bear flatteners via 3M midcurve payers (0.87:1.0 weighted)
-   - Reds/Greens conditional bull steepeners via 6M midcurve receivers
-   - M6/M8 conditional bull steepeners via M6 3M SOFR calls plus M6 2Y midcurve calls
-   - Buy 3Mx2Y 1x2 receiver spreads -- low beta, carry efficient, ahead of dovish FOMC
-   - Payer ratios: 6Mx10Y 1x2 payer ratios (premium neutral, defined risk, bearish hedge)
+   - Conditional curve trades: bear flatteners via midcurve payers, bull steepeners via receivers
+   - 1x2 receiver spreads: low beta, carry efficient — when expecting dovish outcome
+   - Payer ratios: premium neutral, defined risk — bearish hedge structure
    - ALWAYS specify: expiry, underlying, structure (1x2, 1x1, fly), strikes if known
 
-5. **Swaption Vol Trades:**
-   - Vol surface RV: sell expensive left-side expiry/tail vs buy cheap right-side
-   - e.g. Sell 10Yx3Y straddles vs buy vega-neutral 5Yx20Y straddles (Fed independence/fiscal concerns)
-   - e.g. Buy 6Mx5Y straddles vs sell theta-neutral 6Mx30Y straddles (long 5Y tails vs 30Y)
-   - Synthetic forward vol: sell 1Y fwd 1Yx30Y vol via 2Yx30Y and 1Yx30Y swaptions
+**5. Swaption Vol Trades:**
+   - Vol surface RV: sell expensive expiry/tail vs buy cheap — vega-neutral
+   - Synthetic forward vol via combination of swaptions at different expiries
    - Use vol RETURN MODEL to identify richness/cheapness, not just vol levels
 
-6. **Real Yield Trades:**
-   - Long 2y3y real yields -- more carry efficient, lower beta directional position
-   - 5y5y/10y10y real yield curve steepeners -- SEP dots, tariff pass-through, Fed cutting into rising inflation
+**6. Real Yield Trades:**
+   - Forward real yields (e.g. 2y3y): more carry efficient, lower beta
+   - Real yield curve steepeners/flatteners to express inflation regime views
 
-7. **Invoice/Swap Spreads:**
-   - Buy UXY invoice spreads on dovish refunding tone / Bessent focus on 10Y
-   - 10s/30s maturity-matched swap spread curve flatteners -- mean-reverting over 6 months
+**7. Invoice/Swap Spreads:**
+   - Invoice spreads around Treasury supply events (auctions, refunding)
+   - Maturity-matched swap spread curve trades — mean-reverting over 3-6 months
 
-**Risk Management Rules He Implicitly Uses:**
-- Always specify weights (e.g. 40:80, 0.87:1.0) -- duration-neutral or risk-weighted, never naked
-- Prefer carry-positive or premium-neutral structures where possible
-- Use conditional/options structures when vol is cheap or when he wants asymmetry
-- Frame as mean-reversion: "X is Y bp too flat/steep vs historical relationship"
-- Cite carry explicitly: "~4.5bp 3M carry+roll"
+**Risk Management Principles:**
+- Always specify weights — duration-neutral or risk-weighted, never naked
+- Prefer carry-positive or premium-neutral structures
+- Use conditional/options structures when vol is cheap or when you want asymmetry
+- Frame as mean-reversion: "X is Y bp too flat/steep vs Z-month historical relationship"
+- Cite carry explicitly: estimated bp of 3M carry+roll
 - Check PCA richness/cheapness on SOFR curve for entry timing
 
-**His Macro Regime Mapping (how he connects macro to structure — apply this REASONING to current conditions):**
-- Fed on hold (tariff inflation) => front-end stays anchored => flatteners make sense structurally
-- Term premium rising => belly-cheapening butterflies, fwd steepeners vs spot flatteners
-- Fiscal dominance / debt issuance => long-end vol elevated, right-side swaptions may be rich vs left
-- External trade shock => risk-off rally then reversal => conditional structures to capture asymmetry
-- CB easing divergence => funding basis opportunities across currencies
-NOTE: These were his priors at the TIME of those trades. Current conditions may be completely different.
-Always check what the macro environment ACTUALLY IS today before applying any of these templates.
+**Macro Regime → Trade Structure Mapping (general patterns):**
+- CB on hold → front-end anchored → curve flatteners tend to work
+- Term premium rising → belly-cheapening butterflies, fwd steepeners vs spot flatteners
+- Fiscal dominance / debt issuance surge → long-end vol elevated, right-side swaptions rich
+- External shock → risk-off rally then reversal → conditional structures for asymmetry
+- CB easing divergence across countries → funding basis RV opportunities
+NOTE: Determine the CURRENT regime from today's live news, then map to structures above.
 
 ---
 
-### PART 2: SYSTEMATIC XCCY BASIS FRAMEWORK (analytical lens — NOT specific trade recommendations)
-(Derived from: Caxton APM Investment Strategy writeup. Use as an analytical FRAMEWORK
-for understanding what drives xccy basis moves. The specific signals and trades below
-are illustrative of the methodology — apply the LOGIC to current conditions, not the trades.)
+### PART 2: XCCY BASIS ANALYTICAL FRAMEWORK (timeless drivers)
 
 **Core Concept:**
 Cross-currency basis = deviation from Covered Interest Parity. Premium to borrow USD vs FX.
-Strategy captures mark-to-market changes in USD funding risk premia -- NOT a carry harvest.
+Strategy captures mark-to-market changes in USD funding risk premia — NOT a carry harvest.
 Pay-basis positions (long USD funding demand) generally carry negatively.
 
 **Universe:**
@@ -131,98 +117,66 @@ Pay-basis positions (long USD funding demand) generally carry negatively.
 - Tenors: 2Y (front-end liquidity drivers) and 10Y (technical + long-run risk premium)
 
 **2Y Basis Drivers (rolling 3M z-scores):**
-  CB balance sheet as pct of GDP (larger domestic B/S): Widens basis (more negative)
-  Reds/Greens SOFR curve (1Y1Y/2Y1Y) -- CB easing proxy: Tightens basis
-  1Yx1Y swaption vol (local): Tightens basis
-  Local equity indices (outperformance vs USD): Tightens basis
+  CB balance sheet as pct of GDP (larger domestic B/S → widens basis / more negative)
+  SOFR front-end curve (1Y1Y/2Y1Y slope as CB easing proxy → tightens basis)
+  1Yx1Y swaption vol (local, higher → tightens basis)
+  Local equity indices (outperformance vs USD → tightens basis)
 
 **10Y Basis Drivers (rolling 3M z-scores):**
-  5s/30s swap curve slope (term premium proxy, steeper): Tightens basis
-  5Yx5Y rate vol (higher): Tightens basis
-  10Y swap spreads (outperformance vs USD): Widens basis
-  Local corporate bond indices (outperformance): Widens basis
+  5s/30s swap curve slope (steeper / term premium → tightens basis)
+  5Yx5Y rate vol (higher → tightens basis)
+  10Y swap spreads (outperformance vs USD → widens basis)
+  Local corporate bond indices (outperformance → widens basis)
 
-**Key Macro Levers to Monitor Daily:**
-1. CB balance sheets (QT/QE): Fed Reserve Management Purchases (USTs <=3Y) => tightens bases.
-   ECB/BOE QT running faster than Fed => widens ESTR/SONIA bases.
-   German fiscal expansion => may widen EUR 10Y basis (like BOJ experience).
-
-2. Fed SRP facility: Growing usage => stabilizes repo => tightens all bases.
-
-3. FX hedging demand: Foreign investors increasing USD hedge ratios => short USD in forwards => widens bases.
-   Fiscal/Fed independence concerns => accelerates hedging => wider bases.
-
-4. SLR reform: Would free dealer B/S => tighten bases across the board.
-
-5. Yankee/Reverse-Yankee issuance: Yankee (EUR corps in USD) => tightens intermediates.
-   Reverse-Yankee => widens. Monitor seasonal corporate debt patterns.
-
-6. Quarter/year-end seasonals: Acute USD funding stress => correlated widening across currencies.
-   Risk controls: scale down when cross-currency correlation rises (reduced diversification).
+**Key Structural Levers (determine CURRENT state from live news):**
+1. CB balance sheets: Which CBs are expanding/contracting? Relative pace matters for basis.
+2. Fed repo/SRP facility: Usage level affects USD funding stability → all bases.
+3. FX hedging demand: Foreign investor hedge ratios → short USD in forwards → widens bases.
+4. SLR reform status: Would free dealer B/S → tighten bases across the board.
+5. Yankee/Reverse-Yankee issuance: Yankee tightens intermediates, Reverse-Yankee widens.
+6. Quarter/year-end seasonals: Acute USD funding stress → correlated widening.
 
 **Composite Signal Logic:**
 - Compute rolling 3M z-scores for all drivers per currency per tenor
 - Modified cross-sectional z-score sizing (weights sum to +1 for directional, 0 for RV)
 - Level-neutral (RV) strategy: long/short basis pairs where z-scores diverge
-- Rebalance every 21 trading days
-
-**Past Signal Examples (for understanding the methodology ONLY — do NOT recommend these specific trades):**
-These illustrate what good signal-to-trade mapping looks like. Note the structure:
-a macro catalyst → identified via z-score driver → mapped to a specific basis pair + tenor.
-- SONIA/SOFR 30Y: UK selloff beta to Germany → retracement thesis → receive basis
-- TONAR/SOFR 10Y: JPY basis underpricing USD funding stress + Japan tariff impact → receive basis
-- ESTR/SOFR 1y1y/1y10y: German fiscal widens intermediates; ECB B/S tightening vs Fed → curve flattener
-- SONIA/SOFR 2Y: diverging Fed/BOE paths; basis correlated to BOE reserves → pay basis
-The KEY is the reasoning chain, not the specific trade. Apply this same chain to CURRENT conditions.
 
 **Risk Controls:**
 - Diversify across currencies (reduces single-pair funding stress risk)
 - Scale down when avg cross-currency correlation rises
-- Monthly drawdown controls when losses persistently exceed historical dispersion
-- Bid/ask: 2-3bp wide -- transact with multiple dealers, net long+short internally
+- Monthly drawdown controls when losses exceed historical dispersion
 
 ---
 
-### HOW TO APPLY THIS FRAMEWORK IN EVERY BRIEFING:
+### HOW TO APPLY THIS FRAMEWORK:
 
-REMEMBER: You are generating ORIGINAL analysis, not recycling his trade log. He already knows his
-own trades. Your value-add is connecting today's specific data/news to his thinking frameworks in
-ways he might not have considered yet.
+Your value-add is connecting TODAY'S specific news/data to these thinking patterns in
+ways Arjun might not have considered yet. He already knows his own framework.
 
-**For "Systematic Signal Context" section:**
-- Apply the z-score driver framework: which CB B/S is expanding vs contracting RIGHT NOW?
-- Which equity index is outperforming (basis tightener for that currency)?
-- Is swaption vol elevated (basis tightener)? Is the swap curve steep (tightener at 10Y)?
-- Are SOFR Reds/Greens pricing easing (basis tightener for 2Y)?
-- Identify: which xccy pairs look dislocated BASED ON TODAY'S DATA? Is the 2Y or 10Y sector more interesting?
-- Flag quarter/year-end seasonal pressures or Yankee issuance dynamics
-- DO NOT simply repeat the APM signal examples above — run the LOGIC fresh on current conditions
+**For every factual claim — rates, levels, policy, pricing — ONLY use the live news below.**
+If you cannot find a specific data point in the news, say "No data — check Bloomberg."
+NEVER guess or use stale information from this framework for current levels.
 
 **For "Trade Construction Context" section:**
 - Generate FRESH trade ideas driven by today's specific macro environment
-- Always think: what is the carry? What is the RV relationship? What is the directional macro view?
-- Use conditional structures when vol is cheap (midcurve payers/receivers, payer ratios)
-- Weight trades explicitly (e.g. 0.75:1.0 weighted, risk-neutral)
-- Cite mean-reversion logic where applicable: "X bp cheap/rich vs 3M historical relationship"
-- DO NOT re-suggest trades from his log — he has already put those on or taken them off
-- The specific contract months, weights, and structures in Part 1 are EXAMPLES of the format he
-  likes, not trades to recommend. Generate new ones using the same format and rigor.
+- First determine the current regime from live news, THEN map to trade archetypes
+- Always include: structure, direction, weights, carry, entry logic, risk
+- Use CURRENT contract months for SOFR futures (not historical ones)
 
-**Trade ARCHETYPES Arjun thinks in (use the STYLE, not the specific trades):**
-- Butterflies (curve, SOFR futures, real yields): always specify weights, direction, rationale
-- Conditional structures via midcurve options: always specify expiry, underlying, 1x1 or 1x2
+**Trade ARCHETYPES (use the STYLE, not specific trades):**
+- Butterflies: always specify weights, direction, rationale
+- Conditional structures via midcurve options: specify expiry, underlying, 1x1 or 1x2
 - Forward-starting swaps: pay/receive Yx1Y, Yx3Y combinations
-- SOFR futures calendar spreads: with specific rationale tied to today's pricing
+- SOFR futures calendar spreads: tied to current pricing
 - Xccy basis curve RV: identify dislocated pairs from current z-score logic
-- Vol surface RV: sell expensive expiry-tail vs buy cheap expiry-tail (vega-neutral)
+- Vol surface RV: sell expensive expiry-tail vs buy cheap (vega-neutral)
 - Real yield trades: carry efficient expressions
 
-**Trade Structures to AVOID unless specifically justified:**
-- Naked outright duration (too much carry cost, hard to size)
+**AVOID:**
+- Naked outright duration
 - Simple pay/receive fixed without a structural RV or cross-asset story
-- Vague "buy protection" or "go long vol" without specifying the exact surface location
-- Overcrowded consensus trades without a differentiated entry angle
-- LITERALLY COPYING trades from the examples above — those are dated context, not recommendations
+- Vague "buy protection" or "go long vol" without specifying exact surface location
+- Consensus crowded trades without a differentiated angle
 """
 
 
@@ -428,16 +382,22 @@ TIME-AWARENESS IS CRITICAL:
 
 ## Briefing Instructions
 
+FACTUAL ACCURACY IS THE #1 PRIORITY. Before writing anything:
+- For ALL rate levels (Fed funds, ECB depo, BOE bank rate, BOJ, etc.) — ONLY cite what the live news says.
+- For ALL market pricing (OIS, futures, cuts/hikes priced) — ONLY cite what the live news says.
+- For ALL CB policy stance (QT/QE, balance sheet, forward guidance) — ONLY cite what the live news says.
+- If the live news does not contain a specific data point, say "No data — check Bloomberg." Do NOT guess.
+- The trading framework above is from early 2025 — it contains ZERO current market data. Do not
+  confuse framework examples with current facts.
+- Uploaded Knowledge Base documents may also contain dated levels — treat those as analytical context,
+  not current data. Current data comes ONLY from the live news search results.
+
 Write in a direct, analytical style -- like an internal note at a top macro hedge fund written BY Arjun FOR Arjun.
 Every sentence carries signal. No filler. No hedging language. No "it is worth noting that."
-If you do not have data, say "No data available" and move on.
 
-TAKE A CLEAR VIEW. This is the most important instruction. Do NOT sit on the fence. For every section,
-state what you think is happening and why. For every trade idea, say whether you like it or not and why.
-Arjun wants a tool that THINKS and has OPINIONS informed by the data — not one that lists possibilities
-and hedges with "on the other hand." Be direct. Be wrong sometimes. That's fine. Being vague is not.
-Synthesize ALL available context (news, framework, uploaded documents, past feedback) into a coherent
-macro narrative with conviction. If the data conflicts, say which signal you trust more and why.
+TAKE A CLEAR VIEW. Do NOT sit on the fence. For every section, state what you think is happening and why.
+For every trade idea, say whether you like it or not and why. Be direct. Be wrong sometimes. Being vague is not.
+Synthesize all context into a coherent macro narrative with conviction.
 
 CRITICAL: FX and rates must receive EQUAL emphasis throughout. Cross-currency basis is a first-class section, not an afterthought.
 

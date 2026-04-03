@@ -22,6 +22,7 @@ from werkzeug.utils import secure_filename
 from apscheduler.schedulers.background import BackgroundScheduler
 
 import briefing as briefing_module
+from macro_llm import get_macro_llm
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", os.urandom(24))
@@ -612,8 +613,8 @@ def api_chat_history(briefing_date):
 @app.route("/api/chat", methods=["POST"])
 @admin_required
 def api_chat():
-    """Stream a chat response about a briefing section. Uses SSE."""
-    from anthropic import Anthropic
+    """Stream a chat response about a briefing section. Uses MacroLLM (no external API)."""
+    import time
     body = request.json or {}
     briefing_date = body.get("briefing_date", "")
     user_message = body.get("message", "").strip()
@@ -631,56 +632,25 @@ def api_chat():
     # Load chat history for context
     chat_history = load_chat_history(briefing_date)
 
-    # Load insights for additional context
-    insights = load_insights()
-    insights_text = ""
-    if insights:
-        insights_text = "\n\n## Saved Insights from Past Conversations\n"
-        for ins in insights[-30:]:
-            insights_text += f"- [{ins.get('date','')}] {ins.get('insight','')}\n"
-
-    # Build conversation messages
-    system_prompt = (
-        f"You are Arjun's AI macro trading assistant. You are having a conversation about "
-        f"the macro briefing for {briefing_date}.\n\n"
-        f"FULL BRIEFING:\n{briefing_content}\n\n"
-        f"{briefing_module.ARJUN_FRAMEWORK}\n"
-        f"{insights_text}\n\n"
-        f"RULES:\n"
-        f"- You wrote this briefing. Defend your ideas when they are right, but if the user "
-        f"points out a flaw in your logic, ACKNOWLEDGE IT clearly and explain what the correct "
-        f"reasoning should be.\n"
-        f"- Be specific. Use exact instruments, tenors, directions, weights.\n"
-        f"- When explaining a trade, walk through: (1) the macro thesis, (2) why this specific "
-        f"structure expresses it, (3) the carry/roll math, (4) what makes it wrong.\n"
-        f"- If you realize your original briefing had an error, say so directly.\n"
-        f"- Think like a rates/FX/xccy basis trader, not a generalist.\n"
-        f"- Be concise. No filler."
-    )
-
-    if section_context:
-        system_prompt += f"\n\nThe user is asking about this specific section:\n{section_context}"
-
-    messages = []
-    # Include recent chat history (last 20 exchanges to stay within context)
-    for msg in chat_history[-20:]:
-        messages.append({"role": msg["role"], "content": msg["content"]})
-    messages.append({"role": "user", "content": user_message})
-
-    client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+    # Generate response using MacroLLM (no Claude API call)
+    llm = get_macro_llm()
 
     def stream():
-        full_response = ""
         try:
-            with client.messages.stream(
-                model="claude-sonnet-4-20250514",
-                max_tokens=1500,
-                system=system_prompt,
-                messages=messages,
-            ) as s:
-                for chunk in s.text_stream:
-                    full_response += chunk
-                    yield f"data: {json.dumps({'chunk': chunk})}\n\n"
+            full_response = llm.ask(
+                briefing_content=briefing_content,
+                section_context=section_context,
+                question=user_message,
+                chat_history=chat_history,
+            )
+
+            # Simulate streaming by chunking the response word-by-word
+            # This keeps the frontend SSE experience identical
+            words = full_response.split(" ")
+            for i, word in enumerate(words):
+                chunk = word if i == 0 else " " + word
+                yield f"data: {json.dumps({'chunk': chunk})}\n\n"
+                time.sleep(0.015)  # slight delay for natural feel
 
             # Save to chat history
             chat_history.append({"role": "user", "content": user_message, "ts": datetime.now().strftime("%H:%M")})
@@ -689,10 +659,24 @@ def api_chat():
 
             yield f"data: {json.dumps({'done': True})}\n\n"
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
     return Response(stream(), mimetype="text/event-stream",
                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+@app.route("/api/chat/feedback", methods=["POST"])
+@admin_required
+def api_chat_feedback():
+    """Record good/bad feedback on the last MacroLLM response."""
+    body = request.json or {}
+    feedback = body.get("feedback", "")
+    if feedback not in ("good", "bad"):
+        return jsonify({"error": "feedback must be 'good' or 'bad'"}), 400
+    llm = get_macro_llm()
+    llm.give_feedback(feedback)
+    return jsonify({"ok": True})
 
 @app.route("/api/chat/save-insight", methods=["POST"])
 @admin_required
@@ -1116,6 +1100,13 @@ HTML = r"""<!DOCTYPE html>
                        margin-top: 4px; transition: all 0.15s; }
   .chat-save-insight:hover { border-color: var(--green); color: var(--green); }
   .chat-save-insight.saved { border-color: var(--green); color: var(--green); pointer-events: none; }
+  .chat-feedback-row { display: flex; gap: 6px; margin-top: 4px; align-items: center; }
+  .chat-fb-btn { background: none; border: 1px solid var(--border); border-radius: 6px;
+                 padding: 2px 8px; font-size: 12px; cursor: pointer; transition: all 0.15s; color: var(--muted); }
+  .chat-fb-btn:hover { border-color: var(--accent); }
+  .chat-fb-btn.fb-good { border-color: var(--green); color: var(--green); }
+  .chat-fb-btn.fb-bad { border-color: var(--red); color: var(--red); }
+  .chat-fb-btn:disabled { opacity: 0.4; cursor: not-allowed; }
   .briefing-content h2, .briefing-content h3 { cursor: pointer; position: relative; }
   .briefing-content h2:hover, .briefing-content h3:hover { color: var(--accent); }
   .briefing-content h2::after, .briefing-content h3::after {
@@ -1317,7 +1308,7 @@ HTML = r"""<!DOCTYPE html>
 <div class="chat-overlay" id="chat-overlay" onclick="closeChat()"></div>
 <div class="chat-panel" id="chat-panel">
   <div class="chat-header">
-    <span class="chat-header-title">💬 Ask about this briefing</span>
+    <span class="chat-header-title">💬 Macro LLM — Ask about this briefing</span>
     <button class="chat-close" onclick="closeChat()">✕</button>
   </div>
   <div class="chat-context" id="chat-context"></div>
@@ -1898,12 +1889,12 @@ async function loadChatHistory() {
   const container = document.getElementById('chat-messages');
   container.innerHTML = '';
   for (const msg of messages) {
-    appendChatMessage(msg.role, msg.content, msg.ts);
+    appendChatMessage(msg.role, msg.content, msg.ts, true);
   }
   container.scrollTop = container.scrollHeight;
 }
 
-function appendChatMessage(role, content, ts) {
+function appendChatMessage(role, content, ts, skipFeedback) {
   const container = document.getElementById('chat-messages');
   const div = document.createElement('div');
   div.className = `chat-msg chat-msg-${role}`;
@@ -1911,11 +1902,30 @@ function appendChatMessage(role, content, ts) {
   if (ts) html += `<div class="chat-msg-time">${ts}</div>`;
   if (role === 'assistant') {
     const insightText = content.replace(/\n/g, ' ').substring(0, 300);
+    html += `<div class="chat-feedback-row">`;
+    if (!skipFeedback) {
+      html += `<button class="chat-fb-btn" onclick="chatFeedback(this,'good')" title="Good response">👍</button>`;
+      html += `<button class="chat-fb-btn" onclick="chatFeedback(this,'bad')" title="Bad response">👎</button>`;
+    }
     html += `<button class="chat-save-insight" onclick="saveInsight(this, \`${insightText.replace(/`/g,'\\`').replace(/\\/g,'\\\\')}\`)">💡 Save as insight</button>`;
+    html += `</div>`;
   }
   div.innerHTML = html;
   container.appendChild(div);
   container.scrollTop = container.scrollHeight;
+}
+
+async function chatFeedback(btn, feedback) {
+  const row = btn.closest('.chat-feedback-row');
+  row.querySelectorAll('.chat-fb-btn').forEach(b => { b.disabled = true; b.classList.remove('fb-good','fb-bad'); });
+  btn.classList.add(feedback === 'good' ? 'fb-good' : 'fb-bad');
+  try {
+    await fetch('/api/chat/feedback', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ feedback })
+    });
+  } catch(e) { console.error('Feedback error:', e); }
 }
 
 function escapeHtml(text) {
@@ -1940,7 +1950,7 @@ async function sendChat() {
   const typingDiv = document.createElement('div');
   typingDiv.className = 'chat-msg chat-msg-assistant';
   typingDiv.id = 'chat-typing';
-  typingDiv.innerHTML = '<div class="chat-typing">Thinking...</div>';
+  typingDiv.innerHTML = '<div class="chat-typing">Macro LLM reasoning...</div>';
   container.appendChild(typingDiv);
   container.scrollTop = container.scrollHeight;
 

@@ -60,6 +60,7 @@ class MacroLLM:
             "answer": answer,
             "section": context.get("section", ""),
             "regime": context.get("regime", ""),
+            "themes": context.get("themes", []),
         })
         self._extract_learned_rules(question, context)
         self._save_memory()
@@ -565,12 +566,31 @@ class MacroLLM:
         "real_rates": ["real rate", "real yield", "tips", "breakeven inflation", "linker"],
     }
 
-    def extract_signals(self, text: str) -> dict:
+    def extract_signals(self, text: str,
+                        preference_weights: dict = None) -> dict:
+        """
+        Returns bool dict of active themes.
+        If preference_weights supplied, active themes are ordered by weight
+        so that callers can pick top-N themes deterministically.
+        The dict preserves insertion order (Python 3.7+): high-weight themes first.
+        """
         lower = text.lower()
-        signals = {}
+        raw = {}
         for theme, keywords in self.SIGNAL_KEYWORDS.items():
-            signals[theme] = any(kw in lower for kw in keywords)
-        return signals
+            raw[theme] = any(kw in lower for kw in keywords)
+
+        if preference_weights is None:
+            return raw
+
+        # Re-order active themes by descending preference weight
+        active = {t: v for t, v in raw.items() if v}
+        inactive = {t: v for t, v in raw.items() if not v}
+        active_sorted = dict(
+            sorted(active.items(),
+                   key=lambda kv: preference_weights.get(kv[0], 1.0),
+                   reverse=True)
+        )
+        return {**active_sorted, **inactive}
 
     def extract_instruments(self, text: str) -> list:
         lower = text.lower()
@@ -590,21 +610,57 @@ class MacroLLM:
     # =====================================================================
 
     def retrieve_similar(self, question: str, section: str = "", top_k: int = 3) -> list:
+        """
+        Retrieve similar past interactions with composite scoring:
+          overlap_score + recency_weight + feedback_weight
+        """
         q_words = self._meaningful_words(question)
         if not q_words:
             return []
+
+        now = datetime.now()
+        interactions = self.memory.get("interactions", [])
+        total = len(interactions)
+
+        # Current question's active themes for theme-overlap bonus
+        current_sigs = self.extract_signals(question)
+        current_themes = {t for t, v in current_sigs.items() if v}
+
         results = []
-        for interaction in self.memory.get("interactions", []):
+        for idx, interaction in enumerate(interactions):
             if interaction.get("feedback") == "bad":
                 continue
             i_words = self._meaningful_words(interaction.get("question", ""))
-            score = len(q_words & i_words)
-            if section and interaction.get("section", "") == section:
-                score += 2
-            if interaction.get("feedback") == "good":
-                score += 1
-            if score >= 4:  # Raised from 2
+            overlap = len(q_words & i_words)
+            if overlap == 0:
+                continue
+
+            # Recency weight: interactions in the last 20% of history score +2,
+            # next 30% score +1, older score 0
+            recency = 0.0
+            if total > 0:
+                position_pct = idx / total
+                if position_pct >= 0.80:
+                    recency = 2.0
+                elif position_pct >= 0.50:
+                    recency = 1.0
+
+            # Feedback weight
+            feedback_w = 1.5 if interaction.get("feedback") == "good" else 0.0
+
+            # Section match bonus
+            section_bonus = 2.0 if (section and
+                                     interaction.get("section", "") == section) else 0.0
+
+            # Theme overlap bonus (multi-theme stored field)
+            stored_themes = set(interaction.get("themes", []))
+            theme_bonus = len(current_themes & stored_themes) * 0.5
+
+            score = overlap + recency + feedback_w + section_bonus + theme_bonus
+
+            if score >= 4:  # threshold unchanged
                 results.append((score, interaction))
+
         results.sort(key=lambda x: -x[0])
         return [r[1] for r in results[:top_k]]
 
@@ -752,6 +808,101 @@ class MacroLLM:
         return [m["content"] for m in chat_history[-10:] if m.get("role") == "user"]
 
     # =====================================================================
+    # PREFERENCE WEIGHTS — derived from interaction history + feedback
+    # =====================================================================
+
+    def _build_preference_weights(self) -> dict:
+        """
+        Analyze past interactions and feedback to build a theme weight map.
+        High-weight themes are prioritized in reasoning and response augmentation.
+        Returns dict: theme -> float weight (1.0 = neutral, >1 = preferred, <1 = deprioritized)
+        """
+        weights = {theme: 1.0 for theme in self.SIGNAL_KEYWORDS}
+
+        interactions = self.memory.get("interactions", [])
+        if not interactions:
+            return weights
+
+        # Count theme frequency in good vs bad interactions
+        theme_good = {t: 0 for t in weights}
+        theme_bad = {t: 0 for t in weights}
+        theme_total = {t: 0 for t in weights}
+
+        for ix in interactions[-200:]:
+            q = ix.get("question", "")
+            feedback = ix.get("feedback", "")
+            sigs = self.extract_signals(q)
+            for theme, active in sigs.items():
+                if active:
+                    theme_total[theme] += 1
+                    if feedback == "good":
+                        theme_good[theme] += 1
+                    elif feedback == "bad":
+                        theme_bad[theme] += 1
+
+        # Weights from positive/negative feedback ratios
+        for theme in weights:
+            total = theme_total[theme]
+            if total < 3:
+                continue  # not enough signal yet
+            good_rate = theme_good[theme] / total
+            bad_rate = theme_bad[theme] / total
+            # Positive feedback on a theme → upweight; negative → downweight
+            weights[theme] = 1.0 + (good_rate * 1.5) - (bad_rate * 1.0)
+            weights[theme] = max(0.2, min(3.0, weights[theme]))  # clamp
+
+        # Boost themes explicitly requested in learned rules
+        for rule in self.memory.get("learned_rules", [])[-100:]:
+            rule_text = rule.get("rule", "").lower()
+            for theme in weights:
+                # Explicit rule mentions theme → small persistent boost
+                if theme in rule_text or any(kw in rule_text for kw in self.SIGNAL_KEYWORDS.get(theme, [])):
+                    weights[theme] = min(3.0, weights[theme] + 0.15)
+
+        return weights
+
+    # =====================================================================
+    # FAILURE MODE DETECTION — classify WHY the response is weak
+    # =====================================================================
+
+    def _detect_failure_mode(self, question: str, section_ctx: str,
+                              briefing: str) -> str:
+        """
+        Detect the type of failure before generating a response.
+        Returns: 'retrieval_failure' | 'reasoning_gap' | 'low_specificity' | 'ok'
+        """
+        # Check retrieval — can we find any meaningful content?
+        relevant = self._find_relevant_section(briefing, question, section_ctx)
+        if not relevant or len(relevant.strip()) < 40:
+            return "retrieval_failure"
+
+        claims = self._extract_key_claims(relevant)
+        q_words = self._meaningful_words(question)
+        relevant_claims = [c for c in claims if len(q_words & self._meaningful_words(c)) >= 2]
+
+        if not relevant_claims:
+            return "retrieval_failure"
+
+        # Check reasoning depth — do we have causal/conditional language?
+        causal_markers = ["because", "therefore", "implies", "driven by", "leads to",
+                          "as a result", "since", "due to", "causes", "hence",
+                          "if", "when", "unless", "provided that", "given that"]
+        combined = " ".join(relevant_claims).lower()
+        has_causal = any(m in combined for m in causal_markers)
+        if not has_causal and len(relevant_claims) >= 2:
+            return "reasoning_gap"
+
+        # Check specificity — are there numbers or instrument names?
+        has_numbers = bool(re.search(r'\d+\.?\d*[%bpsy]?', combined))
+        specific_terms = ["sofr", "2y", "5y", "10y", "30y", "swaption", "basis",
+                          "butterfly", "fly", "steepen", "flatten", "xccy"]
+        has_specifics = any(t in combined for t in specific_terms)
+        if not has_numbers and not has_specifics:
+            return "low_specificity"
+
+        return "ok"
+
+    # =====================================================================
     # RESPONSE GENERATION — grounded in briefing content + question
     # =====================================================================
 
@@ -759,29 +910,35 @@ class MacroLLM:
                           question: str, chat_history: list) -> str:
         """Generate a response that directly addresses the user's question
         using the actual briefing content as the primary source, enhanced
-        by the multi-region regime model."""
+        by the multi-region regime model, failure mode detection,
+        preference weights, and multi-theme reasoning."""
 
-        # Determine section name
+        # ---- Section name ----
         section_name = ""
         if section_context:
             first_line = section_context.strip().split("\n")[0]
             section_name = first_line.replace("##", "").replace("###", "").strip()
 
-        # Classify the question
+        # ---- Classify question ----
         q_type = self.classify_question(question)
 
-        # Extract signals for regime model
-        q_signals = self.extract_signals(question)
+        # ---- Preference weights (computed once, passed everywhere) ----
+        pref = self._build_preference_weights()
 
-        # Classify briefing regimes once per day
+        # ---- Extract signals — ordered by preference weight, multi-theme ----
+        q_signals = self.extract_signals(question, preference_weights=pref)
+        # Top-3 active themes for multi-theme reasoning
+        active_themes = [t for t, v in q_signals.items() if v][:3]
+
+        # ---- Classify briefing regimes once per day ----
         if briefing_content and not self._regime_classified_today:
             self.regime_model.classify_from_briefing(briefing_content)
             self._regime_classified_today = True
 
-        # Get regime context for this question
+        # ---- Regime context ----
         regime_ctx = self.regime_model.get_context_for_question(question, q_signals)
 
-        # Load supplementary context
+        # ---- Load supplementary context ----
         insights = self._load_insights()
         feedback_entries = self._load_feedback()
         knowledge_docs = self._load_knowledge_docs()
@@ -790,33 +947,69 @@ class MacroLLM:
         corrections = self.retrieve_corrections(question)
         prev_messages = self._parse_chat_history(chat_history)
 
-        # Build the response — QUESTION-FIRST, regime-enhanced
+        # ---- Detect failure mode before dispatching ----
+        failure_mode = self._detect_failure_mode(
+            question, section_context, briefing_content
+        )
+
+        # On retrieval failure: broaden context search — try full briefing
+        effective_section = section_context
+        if failure_mode == "retrieval_failure":
+            # Widen retrieval: pass empty section_ctx so _find_relevant_section
+            # searches the full briefing instead of the narrow section
+            effective_section = ""
+
+        # ---- Build primary response ----
         parts = []
 
         if q_type == "correction":
-            parts.append(self._respond_correction(question, section_context,
+            parts.append(self._respond_correction(question, effective_section,
                                                    briefing_content, prev_messages))
         elif q_type == "explain":
-            parts.append(self._respond_explain(question, section_context,
-                                                briefing_content))
+            parts.append(self._respond_explain(question, effective_section,
+                                                briefing_content, pref=pref))
         elif q_type == "scenario":
-            parts.append(self._respond_scenario(question, section_context,
-                                                 briefing_content))
+            parts.append(self._respond_scenario(question, effective_section,
+                                                 briefing_content, pref=pref))
         elif q_type == "trade_idea":
-            parts.append(self._respond_trade_idea(question, section_context,
-                                                   briefing_content))
+            parts.append(self._respond_trade_idea(question, effective_section,
+                                                   briefing_content, pref=pref))
         elif q_type == "compare":
-            parts.append(self._respond_compare(question, section_context,
-                                                briefing_content))
+            parts.append(self._respond_compare(question, effective_section,
+                                                briefing_content, pref=pref))
         else:
-            parts.append(self._respond_discuss(question, section_context,
-                                               briefing_content))
+            parts.append(self._respond_discuss(question, effective_section,
+                                               briefing_content, pref=pref))
 
-        # Append regime context (adds directional opinion)
+        # ---- On reasoning_gap: force causal chain explanation ----
+        if failure_mode == "reasoning_gap":
+            parts.append(
+                "\n**Causal chain:**\n"
+                "- Driver → mechanism → market impact → trade expression\n"
+                "- Which variable moves first? What is the transmission channel?\n"
+                "- What is the second-order effect on curve shape or basis?"
+            )
+
+        # ---- On low_specificity: force instrument anchor ----
+        if failure_mode == "low_specificity":
+            parts.append(
+                "\n**Specificity check:**\n"
+                "- Name the exact tenor, product, or currency pair\n"
+                "- Give a reference level (current or historical z-score)\n"
+                "- What is the DV01 or vega exposure of the recommended structure?"
+            )
+
+        # ---- Multi-theme context note (when 2+ themes active) ----
+        if len(active_themes) >= 2:
+            theme_str = " + ".join(active_themes[:3])
+            parts.append(f"\n_Multi-theme context active: {theme_str}. "
+                         f"Cross-market dynamics may dominate single-factor moves._")
+
+        # ---- Regime context ----
         if regime_ctx:
             parts.append(regime_ctx)
 
-        # Append learned context (concisely — only if relevant)
+        # ---- Supplementary context ----
         supp = self._build_supplementary(
             question, section_name, learned_rules, feedback_entries,
             knowledge_docs, insights, similar, corrections
@@ -826,7 +1019,7 @@ class MacroLLM:
 
         result = "\n\n".join(p for p in parts if p)
 
-        # If primary response is thin, try regime-based answer BEFORE honest fallback
+        # ---- Thin response fallback ----
         if not result or len(result.strip()) < 30:
             regime_answer = self.regime_model.get_regime_answer(question, q_signals)
             if regime_answer:
@@ -834,10 +1027,58 @@ class MacroLLM:
             else:
                 result = self._honest_fallback(question)
 
-        # Apply learned behavioral constraints
-        result = self._apply_learned_constraints(result)
+        # ---- Apply learned behavioral constraints (structural pass) ----
+        context_str = section_context or ""
+        result = self._apply_learned_constraints(result, question=question,
+                                                  context=context_str)
 
         return result
+
+    # =====================================================================
+    # STRUCTURED OUTPUT + PREFERENCE INJECTION HELPERS
+    # =====================================================================
+
+    def _inject_preference_sections(self, lines: list, pref: dict,
+                                     response_lower: str,
+                                     section_ctx: str, briefing: str,
+                                     question: str) -> None:
+        """
+        Append preference-driven sections to `lines` IN-PLACE based on pref weights.
+        Only injects sections whose content is not already present.
+        Threshold: weight >= 1.5 triggers injection.
+        """
+        # --- PnL section ---
+        if pref.get("carry", 1.0) >= 1.5 or pref.get("real_rates", 1.0) >= 1.5:
+            if "pnl" not in response_lower and "p&l" not in response_lower:
+                lines.append("\n**PnL impact:**")
+                lines.append("- Carry/roll: size to 3M positive carry — verify bp/day before entry")
+                lines.append("- Stop-loss: define in DV01 terms before trade inception")
+
+        # --- Positioning section ---
+        if pref.get("positioning", 1.0) >= 1.5:
+            if "positioning" not in response_lower:
+                lines.append("\n**Positioning / flow:**")
+                lines.append("- CFTC net positioning: extreme readings raise unwind risk")
+                lines.append("- Quarter-end flows can distort short-dated basis and repo")
+
+        # --- Vol section ---
+        if pref.get("vol", 1.0) >= 1.5:
+            if "vol" not in response_lower and "volatility" not in response_lower:
+                lines.append("\n**Volatility context:**")
+                lines.append("- Check 1M vs 3M implied vol to assess near-term event risk")
+                lines.append("- Skew: rich right tail → payers expensive; rich left tail → receivers expensive")
+
+        # --- Basis section ---
+        if pref.get("basis", 1.0) >= 1.5:
+            if "basis" not in response_lower and "xccy" not in response_lower:
+                lines.append("\n**Cross-currency basis note:**")
+                lines.append("- Monitor 3M ESTR/SOFR for funding stress signals")
+                lines.append("- Quarter-end seasonality often compresses basis temporarily")
+
+    @staticmethod
+    def _structured_header(direct_answer: str) -> list:
+        """Returns the first section of a structured response."""
+        return [f"**Direct answer:** {direct_answer}"] if direct_answer else []
 
     # =====================================================================
     # RESPONSE TYPES — each grounded in actual content
@@ -875,51 +1116,82 @@ class MacroLLM:
 
         return "\n".join(lines)
 
-    def _respond_explain(self, question, section_ctx, briefing):
-        """User wants to understand WHY something is the way it is."""
+    def _respond_explain(self, question, section_ctx, briefing,
+                          pref: dict = None):
+        """User wants to understand WHY something is the way it is.
+
+        Structured output:
+        1. Direct answer / concept
+        2. What the briefing says
+        3. Mechanism / reasoning
+        4. Trade / market implication
+        5. (optional) PnL / positioning per preferences
+        """
+        if pref is None:
+            pref = self._build_preference_weights()
         lines = []
 
-        # First check: do we have a deep macro explanation for this concept?
+        # --- 1. Concept explanation (direct answer) ---
         explanation = self._find_macro_explanation(question)
         if explanation:
             lines.append(explanation)
 
-        # Then: what does the briefing say about this topic?
+        # --- 2. What the briefing says ---
         relevant = self._find_relevant_section(briefing, question, section_ctx)
+        briefing_claims = []
         if relevant and len(relevant) > 50:
             claims = self._extract_key_claims(relevant)
-            # Only include claims actually relevant to the question
             q_words = self._meaningful_words(question)
-            relevant_claims = [c for c in claims if len(q_words & self._meaningful_words(c)) >= 2]
-            if relevant_claims:
+            briefing_claims = [c for c in claims
+                               if len(q_words & self._meaningful_words(c)) >= 2]
+            if briefing_claims:
                 lines.append("\n**What the briefing says:**")
-                for c in relevant_claims[:5]:
+                for c in briefing_claims[:5]:
                     lines.append(f"- {c}")
 
-        # If we didn't find a macro explanation, try reasoning from content
+        # --- 3. Mechanism / reasoning (if no canned explanation) ---
         if not explanation:
             reasoned = self._reason_about_question(question, section_ctx, briefing)
             if reasoned:
                 lines.insert(0, reasoned)
 
-        # Add structural intuition (only if we have grounded content)
+        # --- 4. Market implication / intuition ---
         if lines:
             intuition = self._add_structural_intuition(question)
             if intuition:
+                lines.append("\n**Mechanism:**")
                 lines.append(intuition)
 
-        # Final fallback
+        # --- 5. Preference-driven sections ---
+        response_so_far = "\n".join(lines).lower()
+        self._inject_preference_sections(lines, pref, response_so_far,
+                                          section_ctx, briefing, question)
+
         if not lines:
             lines.append(self._honest_fallback(question))
 
         return "\n".join(lines)
 
-    def _respond_scenario(self, question, section_ctx, briefing):
-        """User wants to know 'what if X happens?' — use regime transition probs."""
-        from regime_model import STATES, REGIONS, _REGION_KEYWORDS
+    def _respond_scenario(self, question, section_ctx, briefing,
+                           pref: dict = None):
+        """User wants to know 'what if X happens?' — use regime transition probs.
+
+        Structured output:
+        1. Scenario restatement (direct answer: what changes)
+        2. Current briefing assumption
+        3. Regime transition probabilities (mechanism)
+        4. Market implications
+        5. Basis impact
+        6. (optional) PnL / positioning per preferences
+        """
+        from regime_model import STATES, _REGION_KEYWORDS
+        if pref is None:
+            pref = self._build_preference_weights()
+
+        q = question.lower()
         lines = [f"**Scenario:** {question}"]
 
-        # What does the briefing currently assume?
+        # --- 1. What the briefing currently assumes ---
         if section_ctx:
             claims = self._extract_key_claims(section_ctx)
             if claims:
@@ -927,58 +1199,58 @@ class MacroLLM:
                 for c in claims[:3]:
                     lines.append(f"- {c}")
 
-        # Identify which regions are in the scenario
-        q = question.lower()
+        # --- 2. Regime regions involved ---
         scenario_regions = set()
         for region, kws in _REGION_KEYWORDS.items():
             if any(kw in q for kw in kws):
                 scenario_regions.add(region)
         if not scenario_regions:
-            scenario_regions = {"USD"}  # default
+            scenario_regions = {"USD"}
 
-        # Add regime transition probabilities for the scenario
-        lines.append("\n**Regime model probabilities:**")
+        # --- 3. Regime transition probabilities (mechanism) ---
+        lines.append("\n**Regime model — current state & transitions:**")
         for region in sorted(scenario_regions):
             r = self.regime_model.regions.get(region, {})
             state = r.get("current_state")
             if state is None:
                 continue
             conf = r.get("confidence", 0)
-            lines.append(f"- {region} is currently in {STATES[state]} ({conf:.0%})")
+            lines.append(f"- {region}: {STATES[state]} ({conf:.0%} confidence)")
             matrix = self.regime_model.get_transition_matrix(region)
             transitions = [(j, matrix[state][j]) for j in range(len(STATES))
                            if j != state and matrix[state][j] >= 0.05]
             transitions.sort(key=lambda x: -x[1])
-            if transitions:
-                for j, prob in transitions[:3]:
-                    lines.append(f"  → {STATES[j]}: {prob:.0%} probability")
+            for j, prob in transitions[:3]:
+                lines.append(f"  → {STATES[j]}: {prob:.0%}")
 
-        # What changes under the scenario?
+        # --- 4. Market implications ---
         lines.append("\n**If this scenario plays out:**")
         if "cut" in q or "ease" in q or "dovish" in q:
             lines.append("- Front-end rallies (2Y), curve bull steepens")
             lines.append("- USD weakens, risk currencies (AUD, NZD) bid")
-            lines.append("- Xccy bases tighten as USD funding eases")
-            lines.append("- Receivers and bull steepeners work")
+            lines.append("- Xccy bases tighten as USD funding pressure eases")
+            lines.append("- Receivers and bull steepeners outperform")
         elif "hike" in q or "hawk" in q or "tighten" in q:
-            lines.append("- Front-end sells off, curve bear flattens")
-            lines.append("- USD strengthens, carry favors long USD")
+            lines.append("- Front-end sells off sharply, curve bear flattens")
+            lines.append("- USD strengthens, carry favors long USD positions")
             lines.append("- Xccy bases widen as USD funding tightens")
-            lines.append("- Payer spreads and flatteners work")
+            lines.append("- Payer spreads and curve flatteners outperform")
         elif "recession" in q or "slowdown" in q:
-            lines.append("- Duration rally, long-end outperforms if fiscal fears are contained")
-            lines.append("- Risk-off: JPY strength, equity vol spike")
-            lines.append("- Credit spreads widen → basis impact via corporate flow channel")
+            lines.append("- Duration rally — long-end outperforms if fiscal fears contained")
+            lines.append("- Risk-off: JPY strength, equity vol spike (VIX > 20)")
+            lines.append("- Credit spreads widen → SONIA/SOFR basis via corporate flow channel")
+            lines.append("- Defensive: 10Y receivers, fly buyers (belly cheapens less in recession)")
         elif "inflation" in q or "cpi" in q:
-            lines.append("- Breakevens reprice higher, nominals sell off")
-            lines.append("- Curve bear steepens if term premium rises")
-            lines.append("- Real rates matter: if real rates rise → USD strength")
+            lines.append("- Breakevens reprice higher, nominals sell off (bear steepen)")
+            lines.append("- 5s30s steepens — long-end term premium rises faster than front-end")
+            lines.append("- Real rates: if they rise alongside nominals → USD strength")
+            lines.append("- Payers in the belly, short breakevens if real rates rise")
         else:
-            lines.append("- The key question: which sector of the curve reprices?")
-            lines.append("- Check the second-order effects: what does this mean for positioning?")
-            lines.append("- What conditional structures give you asymmetry into this outcome?")
+            lines.append("- Key question: which part of the curve reprices first?")
+            lines.append("- Second-order: what does this imply for positioning unwinds?")
+            lines.append("- Conditional structures (midcurve options) give cheapest asymmetry")
 
-        # Add basis divergence if multiple regions involved
+        # --- 5. Basis divergence ---
         if len(scenario_regions) >= 2 and "USD" in scenario_regions:
             lines.append("\n**Basis impact:**")
             for region in scenario_regions:
@@ -987,17 +1259,32 @@ class MacroLLM:
                     if bs["direction"] != "unknown":
                         lines.append(f"- {bs['explanation']}")
 
-        lines.append("\n**Positioning consideration:** Think about what's already priced. "
-                      "If the scenario is consensus, the move may already be in the market.")
+        # --- 6. Preference-driven sections ---
+        response_so_far = "\n".join(lines).lower()
+        self._inject_preference_sections(lines, pref, response_so_far,
+                                          section_ctx, briefing, question)
+
+        lines.append("\n**Positioning consideration:** If the scenario is consensus, "
+                     "the move may already be priced — check CFTC and dealer inventory first.")
 
         return "\n".join(lines)
 
-    def _respond_trade_idea(self, question, section_ctx, briefing):
-        """User wants a trade structure or wants to discuss one from the briefing."""
-        lines = []
+    def _respond_trade_idea(self, question, section_ctx, briefing,
+                             pref: dict = None):
+        """User wants a trade structure or wants to discuss one from the briefing.
 
-        # Check if user is asking about a trade idea FROM the briefing
+        Structured output:
+        1. Direct answer: trade direction / structure
+        2. What the briefing says
+        3. Construction mechanics
+        4. Entry logic / risk
+        5. (optional) PnL / positioning per preferences
+        """
+        if pref is None:
+            pref = self._build_preference_weights()
+        lines = []
         q = question.lower()
+
         is_asking_about_existing = any(w in q for w in [
             "tell me", "more about", "elaborate", "expand", "walk me through",
             "break down", "detail", "explain the",
@@ -1010,8 +1297,8 @@ class MacroLLM:
             if any(w in name.lower() for w in ["trade", "idea", "construction", "positioning"]):
                 trade_section += content + "\n"
 
+        # --- 1 + 2. Briefing source ---
         if is_asking_about_existing and (section_ctx or trade_section):
-            # User is asking about a specific trade idea mentioned in the briefing
             source = section_ctx if section_ctx else trade_section
             claims = self._extract_key_claims(source)
             lines.append("**From today's briefing:**")
@@ -1019,7 +1306,6 @@ class MacroLLM:
                 for c in claims:
                     lines.append(f"- {c}")
             else:
-                # No structured claims, quote the raw content (trimmed)
                 for ln in source.strip().split("\n")[:8]:
                     ln = ln.strip()
                     if ln and not ln.startswith("#"):
@@ -1034,51 +1320,73 @@ class MacroLLM:
                     for c in claims[:4]:
                         lines.append(f"- {c}")
 
-        # Add framework guidance based on the specific instrument
+        # --- 3. Construction mechanics ---
         if "butterfly" in q or "fly" in q or "2s5s10s" in q:
             lines.append("\n**Butterfly mechanics:**")
             lines.append("- Structure: buy wings (2Y+10Y), sell belly (5Y) — DV01-weighted")
-            lines.append("- Typical weights: ~0.50 / -1.0 / 0.55 (adjust for DV01)")
+            lines.append("- Typical weights: ~0.50 / -1.0 / 0.55 (adjust for actual DV01s)")
             lines.append("- Pays off when belly cheapens relative to wings")
-            lines.append("- Check 3M carry+roll — belly cheapening flies often have positive carry if curve is steep")
+            lines.append("- Check 3M carry+roll — belly cheapening flies often positive carry on steep curve")
             lines.append("- Risk: belly richening if easing cycle deepens (more cuts priced)")
-            lines.append("- Entry signal: when 5Y is >1 std dev cheap to fitted curve")
+            lines.append("- Entry signal: 5Y >1σ cheap to fitted curve")
         elif "steepen" in q or "flatten" in q:
             lines.append("\n**Curve trade construction:**")
-            lines.append("- Always duration-weight the legs (DV01-neutral)")
-            lines.append("- Forward-starting (e.g. 1Y fwd) vs spot: forwards have more carry but more gamma risk")
+            lines.append("- Always DV01-weight the legs (duration-neutral)")
+            lines.append("- Forward-starting (e.g. 1Y fwd) carries more gamma risk than spot")
             lines.append("- Consider conditional structures (midcurve options) if vol is cheap")
-            lines.append("- Check what's driving the curve: rate expectations vs term premium")
+            lines.append("- Key question: is this rate-expectations driven or term-premium driven?")
         elif "basis" in q or "xccy" in q:
             lines.append("\n**Basis trade construction:**")
-            lines.append("- RV (level-neutral across currencies) preferred over directional")
-            lines.append("- Check composite z-scores at 2Y and 10Y")
-            lines.append("- Pay-basis carries negatively — size for mark-to-market, not carry")
-            lines.append("- Key drivers: USD funding, CB balance sheets, quarter-end, risk appetite")
+            lines.append("- RV (level-neutral across currencies) preferred over directional basis")
+            lines.append("- Check composite z-scores at 2Y and 10Y tenors independently")
+            lines.append("- Pay-basis carries negatively — size for mark-to-market, not yield")
+            lines.append("- Key drivers: USD funding costs, CB balance sheets, quarter-end, risk appetite")
         elif "receiver" in q or "payer" in q:
             lines.append("\n**Swap trade construction:**")
-            lines.append("- Receiver = receive fixed, pay floating — profits from rate decline")
-            lines.append("- Payer = pay fixed, receive floating — profits from rate increase")
-            lines.append("- Forward-starting reduces carry cost but adds mark-to-market risk")
-            lines.append("- Spread trades (e.g. receive 5Y pay 2Y) are lower risk than outrights")
+            lines.append("- Receiver: receive fixed / pay floating — profits from rate decline")
+            lines.append("- Payer: pay fixed / receive floating — profits from rate rise")
+            lines.append("- Forward-starting lowers carry cost but adds mark-to-market volatility")
+            lines.append("- Spread (e.g. receive 5Y / pay 2Y): lower outright risk than either leg alone")
         else:
             lines.append("\n**Key principles:**")
-            lines.append("- Structure must have: direction, weights, carry/roll estimate, entry logic, risk")
-            lines.append("- Prefer carry-positive or premium-neutral constructions")
-            lines.append("- Always specify what makes the trade wrong")
-            lines.append("- Consider the horizon: 1W tactical vs 3M structural have different structures")
+            lines.append("- Full structure requires: direction, tenor, weights, carry/roll, entry logic, stop")
+            lines.append("- Prefer carry-positive or premium-neutral constructions where possible")
+            lines.append("- Define what makes the trade wrong BEFORE entry")
+            lines.append("- Horizon matters: 1W tactical vs 3M structural use different structures")
+
+        # --- 4. Entry / risk framework ---
+        lines.append("\n**Entry logic & risk:**")
+        lines.append("- Entry: technical level (z-score), event catalyst, or carry breakeven")
+        lines.append("- Sizing: based on DV01 risk budget, not notional")
+        lines.append("- Stop: pre-defined in bp or DV01 terms — not 'revisit later'")
+
+        # --- 5. Preference-driven sections ---
+        response_so_far = "\n".join(lines).lower()
+        self._inject_preference_sections(lines, pref, response_so_far,
+                                          section_ctx, briefing, question)
 
         return "\n".join(lines)
 
-    def _respond_compare(self, question, section_ctx, briefing):
-        """User wants to compare two things."""
-        lines = [f"**Comparison:**"]
+    def _respond_compare(self, question, section_ctx, briefing,
+                          pref: dict = None):
+        """User wants to compare two things.
+
+        Structured output:
+        1. Direct answer: which is preferred and why
+        2. What the briefing says
+        3. Comparison framework (mechanism)
+        4. Trade implication
+        5. (optional) PnL / positioning per preferences
+        """
+        if pref is None:
+            pref = self._build_preference_weights()
+        lines = ["**Comparison:**"]
 
         instruments = self.extract_instruments(question)
         if instruments:
-            lines.append(f"Instruments: {', '.join(instruments)}")
+            lines.append(f"Instruments identified: {', '.join(instruments)}")
 
-        # Pull relevant briefing content
+        # --- 2. Briefing evidence ---
         relevant = self._find_relevant_section(briefing, question, section_ctx)
         if relevant:
             claims = self._extract_key_claims(relevant)
@@ -1087,53 +1395,76 @@ class MacroLLM:
                 for c in claims[:4]:
                     lines.append(f"- {c}")
 
-        lines.append("\n**Framework for comparison:**")
-        lines.append("- Relative carry+roll over 3M horizon")
-        lines.append("- Historical relationship (z-score of the spread)")
-        lines.append("- Sensitivity to the macro catalyst you're betting on")
-        lines.append("- Liquidity and transaction cost")
+        # --- 3. Comparison framework (mechanism) ---
+        lines.append("\n**Comparison framework:**")
+        lines.append("- Relative carry+roll over 3M horizon (bp/day after transaction costs)")
+        lines.append("- Historical z-score of the spread — how stretched is the current relationship?")
+        lines.append("- Macro sensitivity: which instrument is more exposed to the catalyst you're trading?")
+        lines.append("- Convexity profile: how does each instrument behave as rates move ±50bp?")
+        lines.append("- Liquidity: bid/ask spread and depth matter at your typical trade size")
+
+        # --- 4. Trade implication ---
+        lines.append("\n**Trade implication:**")
+        lines.append("- Prefer the instrument with better carry+roll unless there's a strong catalyst view")
+        lines.append("- If the z-score is >2σ stretched, fading the relationship is preferred to chasing")
+
+        # --- 5. Preference-driven sections ---
+        response_so_far = "\n".join(lines).lower()
+        self._inject_preference_sections(lines, pref, response_so_far,
+                                          section_ctx, briefing, question)
 
         return "\n".join(lines)
 
-    def _respond_discuss(self, question, section_ctx, briefing):
-        """General discussion — ground everything in the briefing."""
+    def _respond_discuss(self, question, section_ctx, briefing,
+                          pref: dict = None):
+        """General discussion — ground everything in the briefing.
+
+        Structured output:
+        1. Direct answer
+        2. What the briefing says
+        3. Mechanism / reasoning
+        4. Market / trade implication
+        5. (optional) PnL / positioning per preferences
+        """
+        if pref is None:
+            pref = self._build_preference_weights()
         lines = []
 
-        # Find and present the relevant briefing content
+        # --- 2. What the briefing says ---
         relevant = self._find_relevant_section(briefing, question, section_ctx)
+        briefing_claims = []
         if relevant and len(relevant) > 50:
-            # Only include claims that are actually relevant to the question
             claims = self._extract_key_claims(relevant)
             q_words = self._meaningful_words(question)
-            relevant_claims = []
-            for c in claims:
-                c_words = self._meaningful_words(c)
-                if len(q_words & c_words) >= 2:
-                    relevant_claims.append(c)
-            if relevant_claims:
+            briefing_claims = [c for c in claims
+                               if len(q_words & self._meaningful_words(c)) >= 2]
+            if briefing_claims:
                 lines.append("**From the briefing:**")
-                for c in relevant_claims[:5]:
+                for c in briefing_claims[:5]:
                     lines.append(f"- {c}")
                 lines.append("")
 
-        # Check for macro explanation
+        # --- 3. Mechanism ---
         explanation = self._find_macro_explanation(question)
         if explanation:
             lines.append(explanation)
 
-        # If we still have nothing, try reasoning from briefing content
         if not lines:
             reasoned = self._reason_about_question(question, section_ctx, briefing)
             if reasoned:
                 lines.append(reasoned)
 
-        # Add structural thinking (only if we already have some grounded content)
+        # --- 4. Structural intuition / trade implication ---
         if lines:
             intuition = self._add_structural_intuition(question)
             if intuition:
                 lines.append(intuition)
 
-        # Final fallback — be honest about limitations
+        # --- 5. Preference-driven sections ---
+        response_so_far = "\n".join(lines).lower()
+        self._inject_preference_sections(lines, pref, response_so_far,
+                                          section_ctx, briefing, question)
+
         if not lines:
             lines.append(self._honest_fallback(question))
 
@@ -1237,42 +1568,145 @@ class MacroLLM:
 
         return "\n".join(notes) if notes else ""
 
-    def _apply_learned_constraints(self, response: str) -> str:
+    # -----------------------------------------------------------------------
+    # Filler phrases removed when "avoid generic" / "too generic" is active
+    # -----------------------------------------------------------------------
+    _FILLER_PHRASES = [
+        ("this suggests", "specifically, this implies"),
+        ("macro environment", "current pricing dynamics"),
+        ("market conditions", "the current rate/spread setup"),
+        ("it is worth noting", ""),
+        ("it should be noted", ""),
+        ("importantly,", ""),
+        ("it is important to note", ""),
+        ("in the current environment", "right now"),
+        ("going forward", "over the next 1-3M"),
+        ("in general,", ""),
+        ("broadly speaking,", ""),
+        ("at a high level,", ""),
+        ("needless to say,", ""),
+        ("as we know,", ""),
+        ("generally speaking,", ""),
+    ]
+
+    def _apply_learned_constraints(self, response: str, question: str = "",
+                                   context: str = "") -> str:
         """
-        Enforce learned behavioral rules so the system actually adapts over time.
-        This is what turns memory into behavior change.
+        Enforce learned behavioral rules — structurally alters the response.
+
+        Pass-order:
+        1. Aggregate rule signals across ALL recent learned rules (not one-by-one)
+        2. Apply structural transformations in priority order
+        3. Inject preference-driven sections (PnL, positioning, specificity)
+        4. Strip filler language if flagged
+
+        This must be called AFTER the primary response is assembled.
         """
         rules = self.memory.get("learned_rules", [])
-        
         if not rules:
             return response
-    
+
+        # ---- 1. Aggregate signals from recent rules ----
+        recent_rules = [r.get("rule", "").lower() for r in rules[-80:]]
+        joined_rules = " ".join(recent_rules)
+
+        wants_pnl = (joined_rules.count("pnl") + joined_rules.count("p&l") +
+                     joined_rules.count("carry") + joined_rules.count("return")) >= 2
+        wants_positioning = joined_rules.count("positioning") >= 2
+        wants_specific = (joined_rules.count("be specific") +
+                          joined_rules.count("more concrete") +
+                          joined_rules.count("specific instrument") +
+                          joined_rules.count("specific level")) >= 1
+        avoid_generic = (joined_rules.count("too generic") +
+                         joined_rules.count("avoid generic") +
+                         joined_rules.count("dont use generic") +
+                         joined_rules.count("don't use generic") +
+                         joined_rules.count("generic macro")) >= 1
+
+        # Also check preference weights for a high-confidence signal
+        pref = self._build_preference_weights()
+        if pref.get("positioning", 1.0) >= 1.8:
+            wants_positioning = True
+        if pref.get("carry", 1.0) >= 1.8 or pref.get("real_rates", 1.0) >= 1.8:
+            wants_pnl = True
+
         response_lower = response.lower()
-    
-        for r in rules[-50:]:  # only recent rules matter
+
+        # ---- 2. Filler phrase replacement (structural, not append) ----
+        if avoid_generic:
+            for old, new in self._FILLER_PHRASES:
+                if new:
+                    response = re.sub(re.escape(old), new, response, flags=re.IGNORECASE)
+                else:
+                    # Remove sentence fragment: strip phrase + leading comma/space
+                    response = re.sub(
+                        r'(?i)' + re.escape(old) + r'[,]?\s*', '', response
+                    )
+
+        # ---- 3. Specificity injection ----
+        if wants_specific:
+            if not any(t in response_lower for t in
+                       ["2y", "5y", "10y", "30y", "sofr", "swaption", "basis",
+                        "butterfly", "fly", "bps", "bp ", "z-score", "example:"]):
+                # Insert a concrete anchor at end of first paragraph
+                first_para_end = response.find("\n\n")
+                anchor = ("\n_Instrument anchor: ground this in a specific tenor "
+                          "(e.g. 5Y, 2s10s), product (swaption, SOFR future), "
+                          "or level (e.g. basis at -25bp)._")
+                if first_para_end != -1:
+                    response = response[:first_para_end] + anchor + response[first_para_end:]
+                else:
+                    response += anchor
+
+        # ---- 4. PnL section injection ----
+        if wants_pnl and "pnl" not in response_lower and "p&l" not in response_lower:
+            # Build a PnL section grounded in the response content
+            carry_mentioned = "carry" in response_lower
+            roll_mentioned = "roll" in response_lower
+            convexity_mentioned = "convex" in response_lower
+            pnl_lines = ["", "**PnL drivers:**"]
+            if carry_mentioned or roll_mentioned:
+                pnl_lines.append("- Carry/roll: size to 3M positive carry — quantify in bp/day before entry")
+            else:
+                pnl_lines.append("- Carry: check whether this trade runs positive or negative carry before sizing")
+            if convexity_mentioned:
+                pnl_lines.append("- Convexity: duration drift matters — re-hedge delta if rates move >25bp")
+            pnl_lines.append("- Mark-to-market: which leg drives interim P&L volatility?")
+            pnl_lines.append("- Exit trigger: define profit target and stop-loss in DV01 or bp terms")
+            response += "\n".join(pnl_lines)
+
+        # ---- 5. Positioning section injection ----
+        if wants_positioning and "positioning" not in response_lower:
+            pos_lines = ["", "**Positioning / flow:**"]
+            pos_lines.append("- Check CFTC net positioning — if consensus is extreme, fade risk is high")
+            pos_lines.append("- Dealer positioning: are desks long/short duration? Affects intraday technicals")
+            pos_lines.append("- Flow: month-end/quarter-end rebalancing can temporarily distort levels")
+            pos_lines.append("- Crowded trade risk: if the thesis is consensus, size conservatively and use options for asymmetry")
+            response += "\n".join(pos_lines)
+
+        # ---- 6. Per-rule specific overrides (high-confidence explicit rules) ----
+        for r in rules[-30:]:
             rule_text = r.get("rule", "").lower()
-    
-            # === STYLE ENFORCEMENT ===
-            if "dont use generic macro language" in rule_text:
-                response = response.replace("macro environment", "specific pricing dynamics")
-    
-            if "be specific" in rule_text or "more concrete" in rule_text:
-                if "example:" not in response_lower:
-                    response += "\n\nExample: Apply this to a specific point on the curve or instrument."
-    
-            # === THINK LIKE A TRADER ===
-            if "focus on pnl" in rule_text or "pnl" in rule_text:
-                if "pnl" not in response_lower:
-                    response += "\n\n**PnL focus:** What actually drives returns here? Carry, roll, or convexity?"
-    
-            if "positioning" in rule_text:
-                if "positioning" not in response_lower:
-                    response += "\n\n**Positioning:** The move depends on how crowded this trade is."
-    
-            # === AVOID PAST MISTAKES ===
-            if "too generic" in rule_text:
-                response = response.replace("this suggests", "specifically, this implies")
-    
+            # Confidence filter: only enforce rules that have been seen 2+ times
+            # (proxy: rule text appears in the joined corpus more than once)
+            rule_words = self._meaningful_words(rule_text)
+            if len(rule_words) < 3:
+                continue
+
+            if "dont hedge" in rule_text or "don't hedge" in rule_text:
+                response = re.sub(
+                    r'(?i)(consider hedging|you could hedge|hedge the|add a hedge)',
+                    'monitor the risk',
+                    response
+                )
+            if "use dv01" in rule_text or "dv01 neutral" in rule_text:
+                if "dv01" not in response_lower:
+                    response = response.rstrip() + "\n- Ensure DV01-neutral weighting across all legs."
+            if "prefer conditional" in rule_text or "use options" in rule_text:
+                if "option" not in response_lower and "swaption" not in response_lower:
+                    response = response.rstrip() + \
+                        "\n- Prefer conditional structures (e.g. payer spread, midcurve option) over outright swaps when vol is cheap."
+
         return response
 
     # =====================================================================
@@ -1340,16 +1774,19 @@ class MacroLLM:
             first_line = section_context.strip().split("\n")[0]
             section_name = first_line.replace("##", "").replace("###", "").strip()
 
-        # Extract signals only from the question + section (NOT the full briefing)
-        q_signals = self.extract_signals(f"{section_context}\n{question}")
-        regime = "general"
-        for theme, active in q_signals.items():
-            if active:
-                regime = theme
-                break
+        # Extract signals with preference weighting — store top active themes, not just first
+        pref = self._build_preference_weights()
+        q_signals = self.extract_signals(
+            f"{section_context}\n{question}", preference_weights=pref
+        )
+        active_themes = [t for t, v in q_signals.items() if v]
+        # Primary regime = highest-weighted active theme
+        regime = active_themes[0] if active_themes else "general"
+        # Store all active themes for richer retrieval later
+        regime_tags = active_themes[:3] if active_themes else ["general"]
 
         self.store_interaction(
-            {"section": section_name, "regime": regime},
+            {"section": section_name, "regime": regime, "themes": regime_tags},
             question, answer
         )
         return answer

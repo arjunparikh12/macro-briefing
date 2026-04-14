@@ -1,20 +1,23 @@
 """
-macro_llm.py — Interactive Macro Reasoning Engine
+macro_llm.py — Adaptive Macro Reasoning Engine
 
-A self-contained reasoning engine that replaces Claude API calls in the
-interactive chat panel. Learns from:
-  - The briefing it generated (full text)
-  - ARJUN_FRAMEWORK (trade archetypes, regime mapping)
+Self-contained, deterministic reasoning engine for interactive chat AND daily
+briefing generation. Learns from briefings, feedback, corrections, uploaded
+documents, and conversation memory. All reasoning is pattern-matched — zero
+external API calls.
+
+Sources:
+  - Generated briefings (auto-loaded as context for every chat question)
+  - MACRO_EXPLANATIONS (30+ timeless explanations of rates, FX, basis, vol concepts)
+  - Trading framework (trade archetypes, regime → trade mapping)
   - Feedback history (feedback.json)
   - Saved insights (insights.json)
   - Knowledge base docs (data/knowledge/*.json)
-  - Its own conversation memory (macro_memory.json)
+  - Conversation memory (macro_memory.json)
+  - Multi-region Markov regime model (10 regions, 5 states)
 
-No external LLM calls. All reasoning is deterministic + pattern-matched.
-
-DESIGN PRINCIPLE: The response must be grounded in the ACTUAL briefing content
-and the user's SPECIFIC question. Regime/cross-asset frameworks are supplementary
-context, NOT the primary output. The user is asking about what's in front of them.
+Design principle: responses are grounded in the user's SPECIFIC question first,
+then the briefing content, then the knowledge base. Regime context is supplementary.
 """
 
 import json
@@ -160,6 +163,20 @@ class MacroLLM:
     def _load_knowledge_docs() -> dict:
         return db.load_knowledge_docs()
 
+    @staticmethod
+    def _get_last_briefing_content() -> str:
+        """Load the most recent briefing so chat always has context.
+
+        This is critical — without this, the chat has no grounding when the user
+        navigates away from a briefing section or opens a fresh chat window.
+        """
+        briefing_files = db.list_briefings()
+        if not briefing_files:
+            return ""
+        # list_briefings returns newest first
+        latest_date = briefing_files[0].replace("macro-briefing-", "").replace(".md", "")
+        return db.read_briefing(latest_date)
+
     # =====================================================================
     # BRIEFING CONTENT PARSING — extract what the briefing actually says
     # =====================================================================
@@ -206,8 +223,10 @@ class MacroLLM:
             if score > best_score:
                 best_score = score
                 best_section = f"**{name}:**\n{content}"
-        # Only return if there's meaningful overlap (at least 3 meaningful words)
-        return best_section if best_score >= 3 else ""
+        # Lowered threshold: even 1 meaningful word match is enough if
+        # the briefing is short, because the user is asking about what's
+        # in front of them
+        return best_section if best_score >= 1 else ""
 
     def _extract_key_claims(self, text: str) -> list:
         """Extract specific factual claims/sentences from briefing text that contain
@@ -430,7 +449,7 @@ class MacroLLM:
     # =====================================================================
 
     MACRO_EXPLANATIONS = {
-        # Curve dynamics
+        # ── Curve dynamics ────────────────────────────────────────────────
         "belly cheap": (
             "The belly (5Y sector) cheapens when the market prices a shallower easing "
             "cycle because: (1) The front-end (2Y) is anchored by near-term rate expectations "
@@ -445,12 +464,9 @@ class MacroLLM:
         "belly underperform": (
             "Belly underperformance (5Y sector lagging 2Y and 10Y) typically happens when: "
             "(1) The easing cycle is shallower than expected — fewer cuts get priced into the "
-            "intermediate sector. The 2Y prices the NEXT few meetings, so it moves fast on "
-            "near-term cuts. But the 5Y prices the entire path — if there are fewer cuts in "
-            "total, the 5Y doesn't benefit as much. (2) Term premium dynamics — long-end "
-            "trades on supply and structural factors, belly trades on rate expectations. "
-            "(3) Convexity: the belly has less convexity protection than the long-end, so "
-            "in a sell-off, it cheapens more per unit of duration."
+            "intermediate sector. (2) Term premium dynamics — long-end trades on supply and "
+            "structural factors, belly trades on rate expectations. (3) Convexity: the belly "
+            "has less convexity protection than the long-end."
         ),
         "bull steepen": (
             "Bull steepening: front-end rallies (rates fall) more than the long-end. "
@@ -472,6 +488,36 @@ class MacroLLM:
             "doesn't move as much because the market thinks tightening will eventually slow "
             "growth. The 2s10s NARROWS or inverts."
         ),
+        "yield curve": (
+            "The yield curve plots interest rates across maturities (2Y, 5Y, 10Y, 30Y). "
+            "A normal curve is upward-sloping — longer maturity = higher yield (term premium). "
+            "An inverted curve (2Y > 10Y) historically signals recession: the market expects rate "
+            "cuts ahead. Key spreads: 2s10s (most watched), 2s5s (front-end cycle), 5s30s "
+            "(term premium proxy). The curve can steepen (widen) or flatten (narrow) through "
+            "bull or bear moves — each combination has different drivers."
+        ),
+        # ── Swap spreads ─────────────────────────────────────────────────
+        "swap spread": (
+            "A swap spread is the difference between the fixed rate on an interest rate swap "
+            "and the yield on a Treasury bond of the same maturity. For example, if the 10Y "
+            "swap rate is 4.50% and the 10Y Treasury yield is 4.30%, the 10Y swap spread is "
+            "+20bp. Swap spreads reflect: (1) Credit risk — swaps involve bank counterparty "
+            "risk that Treasuries don't have. (2) Supply/demand — heavy Treasury issuance "
+            "compresses spreads (Treasuries cheapen). (3) Dealer balance sheet — when banks are "
+            "balance-sheet constrained (e.g. SLR), they can't intermediate, and spreads tighten "
+            "or go negative. (4) Funding conditions — repo/SOFR tightness affects the swap-Treasury "
+            "basis. Negative swap spreads (swaps yield LESS than Treasuries) mean Treasuries "
+            "are trading cheap to swaps — typically driven by excess supply or dealer constraints."
+        ),
+        "invoice spread": (
+            "An invoice spread is the difference between the cheapest-to-deliver (CTD) Treasury "
+            "futures contract and the corresponding maturity swap. It's essentially the swap spread "
+            "embedded in futures. Invoice spreads are popular for: (1) hedging Treasury auction "
+            "supply risk, (2) expressing views on Treasury richness/cheapness vs swaps, and "
+            "(3) trading around refunding/supply events. When Treasury supply surges, invoice "
+            "spreads typically widen as Treasuries cheapen relative to swaps."
+        ),
+        # ── Basis & funding ──────────────────────────────────────────────
         "basis widen": (
             "Cross-currency basis widening (more negative) means it costs MORE to borrow "
             "USD via FX swaps. Drivers: (1) Higher USD funding demand — foreign banks need "
@@ -485,14 +531,60 @@ class MacroLLM:
             "(2) CB swap lines activated. (3) Risk-on — less demand for USD safety. "
             "(4) SLR reform — frees dealer balance sheet for intermediation."
         ),
+        "cross-currency basis": (
+            "Cross-currency basis is the deviation from Covered Interest Parity (CIP). It represents "
+            "the premium or discount to borrow USD via FX swaps instead of directly. A negative basis "
+            "means there's a premium to borrow USD — you pay more than CIP would imply. "
+            "Universe: ESTR/SOFR (EUR), SONIA/SOFR (GBP), TONAR/SOFR (JPY), AONIA/SOFR (AUD), "
+            "SARON/SOFR (CHF). Key tenors: 2Y (driven by CB balance sheets, front-end slope, swaption vol) "
+            "and 10Y (driven by curve slope, rate vol, swap spreads). Structural levers: CB balance sheets, "
+            "Fed SRP facility, FX hedging demand, SLR reform, Yankee/Reverse-Yankee issuance, quarter-end."
+        ),
+        "xccy basis": (
+            "Cross-currency basis is the deviation from Covered Interest Parity (CIP). It represents "
+            "the premium to borrow USD via FX swaps. A negative basis means USD funding is expensive. "
+            "Key pairs: ESTR/SOFR, SONIA/SOFR, TONAR/SOFR, AONIA/SOFR, SARON/SOFR at 2Y and 10Y."
+        ),
+        "covered interest parity": (
+            "Covered Interest Parity (CIP) says that the FX forward rate should equal the spot rate "
+            "adjusted by the interest rate differential between two currencies. In practice, CIP breaks down "
+            "— the deviation is the cross-currency basis. When basis is negative, USD borrowing via FX swaps "
+            "costs more than domestic USD rates. Persistent CIP violations are driven by dealer balance sheet "
+            "constraints, regulatory costs (SLR, leverage ratio), and asymmetric funding demand."
+        ),
+        # ── SOFR & funding ───────────────────────────────────────────────
+        "sofr": (
+            "SOFR (Secured Overnight Financing Rate) is the benchmark overnight rate for USD, "
+            "based on Treasury repo transactions. It replaced LIBOR. SOFR futures (CME) are "
+            "the primary instrument for pricing Fed rate expectations. Key tenors: whites (front 4 "
+            "contracts), reds (months 5-8), greens (months 9-12), blues (months 13-16). "
+            "The SOFR curve shape tells you: (1) how many cuts/hikes are priced, (2) the terminal "
+            "rate expectation, (3) where PCA richness/cheapness exists for RV trades."
+        ),
+        "repo": (
+            "The repo market is where institutions borrow cash against Treasury collateral overnight "
+            "or term. SOFR is based on repo rates. When repo tightens: (1) SOFR spikes, (2) front-end "
+            "rates rise, (3) funding costs increase for leveraged positions. The Fed's Standing Repo "
+            "Facility (SRP) puts a ceiling on repo stress. Reserve levels, Treasury settlement, and "
+            "quarter-end reporting dates all affect repo availability."
+        ),
+        # ── Carry & roll ─────────────────────────────────────────────────
         "carry roll": (
-            "Carry+roll is the return from holding a position over time: "
+            "Carry+roll is the return from holding a position over time. "
             "Carry = coupon/income minus funding cost. Roll-down = as time passes, a bond "
             "'rolls down' the yield curve to a lower yield (higher price) if the curve is "
             "upward-sloping. A steep curve means high roll-down. For swaps: positive carry "
             "means the fixed rate you receive exceeds SOFR. Roll-down depends on the "
             "forward curve shape — if fwd rates are above spot, roll is positive."
         ),
+        "carry trade": (
+            "A carry trade earns the yield differential between two instruments or currencies. "
+            "In FX: borrow low-rate currency (JPY, CHF), invest in high-rate currency (AUD, MXN). "
+            "In rates: receive fixed on the steep part of the curve and fund at SOFR. "
+            "Carry trades work in low-vol, trending environments. They blow up in risk-off events "
+            "when correlations spike and carry currencies collapse. Always size for the unwind risk."
+        ),
+        # ── Term premium ─────────────────────────────────────────────────
         "term premium": (
             "Term premium is the extra yield investors demand to hold longer-duration bonds "
             "instead of rolling short-term. It's NOT about rate expectations — it's about "
@@ -501,6 +593,7 @@ class MacroLLM:
             "(4) QT/QE — balance sheet policy directly affects duration supply to the market. "
             "Term premium rising → long-end cheapens → steepeners work."
         ),
+        # ── Volatility ───────────────────────────────────────────────────
         "vol surface": (
             "The swaption vol surface has two axes: expiry (when the option expires) and "
             "tail (the length of the underlying swap). Left-side = short expiry (1M, 3M), "
@@ -509,26 +602,162 @@ class MacroLLM:
             "means near-term event risk (FOMC, data). RV trades: sell expensive sector, buy cheap, "
             "vega-neutral."
         ),
+        "swaption": (
+            "A swaption is an option to enter into an interest rate swap. A payer swaption gives "
+            "the right to pay fixed (bearish rates). A receiver swaption gives the right to receive "
+            "fixed (bullish rates). Notation: 3Mx10Y = option expires in 3 months on a 10Y swap. "
+            "Swaptions are priced in vol (bp/day or normalised). Key uses: (1) hedging rate risk "
+            "with defined loss, (2) expressing directional views cheaply, (3) vol surface RV trades."
+        ),
+        "vix": (
+            "The VIX measures implied volatility on S&P 500 options. It's often called the "
+            "'fear index.' For rates traders: VIX spikes → risk-off → rates rally (flight to quality), "
+            "curve bull flattens, basis widens (USD funding demand rises). VIX > 20 historically "
+            "correlates with increased rates vol and wider xccy bases. The rates equivalent is "
+            "the MOVE index (Merrill Lynch Option Volatility Estimate)."
+        ),
+        "move index": (
+            "The MOVE index measures implied volatility on US Treasuries (via options on 2Y, 5Y, 10Y, "
+            "30Y). It's the rates equivalent of VIX. MOVE > 100 = elevated uncertainty. Drivers: "
+            "FOMC uncertainty, inflation data surprises, supply events. High MOVE favors: (1) selling "
+            "vol on the expensive part of the swaption surface, (2) conditional structures over "
+            "outright positions, (3) smaller position sizing."
+        ),
+        # ── FX ───────────────────────────────────────────────────────────
+        "dxy": (
+            "DXY (US Dollar Index) is a trade-weighted index of the USD against 6 major currencies "
+            "(EUR 57.6%, JPY 13.6%, GBP 11.9%, CAD 9.1%, SEK 4.2%, CHF 3.6%). EUR dominates. "
+            "DXY rising = USD strengthening. Key drivers: relative rate differentials (Fed vs other CBs), "
+            "risk sentiment (USD strengthens in risk-off), fiscal dynamics, and trade flows."
+        ),
+        "cable": (
+            "Cable is the GBP/USD exchange rate. Named after the transatlantic cable that transmitted "
+            "GBP/USD prices between London and New York. Key drivers: BoE policy expectations, UK data "
+            "(CPI, employment), fiscal policy, and the rate differential vs the Fed."
+        ),
+        # ── Central bank policy ──────────────────────────────────────────
+        "quantitative easing": (
+            "QE (Quantitative Easing): a central bank buys government bonds (and sometimes other "
+            "assets) to inject reserves into the banking system and push down long-term yields. "
+            "Effects: (1) lowers term premium, (2) flattens the curve, (3) weakens the currency, "
+            "(4) tightens xccy basis (more USD/local currency in the system). QT is the reverse."
+        ),
+        "quantitative tightening": (
+            "QT (Quantitative Tightening): a central bank reduces its balance sheet by letting bonds "
+            "mature without reinvesting (passive QT) or actively selling (active QT). Effects: "
+            "(1) raises term premium, (2) steepens the curve, (3) strengthens the currency, "
+            "(4) widens xccy basis (less currency liquidity). QT pace matters: faster QT drains "
+            "reserves faster and can stress repo markets."
+        ),
+        "dot plot": (
+            "The dot plot is the FOMC's quarterly projection of each member's expected Fed funds rate "
+            "at year-end for the next 3 years and the long run. Key: the MEDIAN dot drives market "
+            "pricing. The dispersion (spread between dots) shows uncertainty. Market moves when: "
+            "the median dot shifts meaningfully, or the distribution gets more hawkish/dovish."
+        ),
+        # ── Trade structures ─────────────────────────────────────────────
+        "butterfly": (
+            "A butterfly is a 3-leg curve trade: buy the wings (e.g. 2Y + 10Y) and sell the body "
+            "(e.g. 5Y), DV01-weighted. Pays off when the body cheapens relative to the wings. "
+            "Typical notation: 2s5s10s fly. Weights: ~0.50 / -1.0 / 0.55 (adjust for actual DV01). "
+            "Use case: express a view that the belly is cheap/rich without taking outright duration. "
+            "Entry signal: when the body is >1σ cheap or rich to fitted curve."
+        ),
+        "steepener": (
+            "A steepener profits when the yield curve steepens (long-end rates rise more than "
+            "short-end, or short-end falls more than long-end). Structure: receive short-end (e.g. 2Y) "
+            "/ pay long-end (e.g. 10Y), DV01-neutral. Use case: express a view that the curve is too "
+            "flat. Entry signal: 2s10s or 5s30s near historical tights. Steepeners can be bull "
+            "(rates falling) or bear (rates rising) depending on the driver."
+        ),
+        "flattener": (
+            "A flattener profits when the yield curve flattens (short-end rates rise more than "
+            "long-end, or long-end falls more than short-end). Structure: pay short-end / receive "
+            "long-end, DV01-neutral. Use case: express a view that tightening policy will invert the "
+            "curve. Flatteners tend to work when: CB is hiking, front-end reprices hawkishly."
+        ),
+        "receiver": (
+            "A receiver swap or receiver swaption: receive fixed rate / pay floating (SOFR). "
+            "Profits when rates fall. A receiver swaption gives the right to enter a receiver swap. "
+            "Use case: bullish rates — expect rate cuts or flight-to-quality rally."
+        ),
+        "payer": (
+            "A payer swap or payer swaption: pay fixed rate / receive floating (SOFR). "
+            "Profits when rates rise. A payer swaption gives the right to enter a payer swap. "
+            "Use case: bearish rates — expect rate hikes, inflation, or term premium widening."
+        ),
+        "midcurve": (
+            "A midcurve option is a short-dated option on a deferred-expiry swap or future. "
+            "Example: 3M option on the 2Y swap starting in 1Y (1Yx2Y midcurve). Use case: "
+            "express a time-limited directional view on a forward rate cheaply. Advantage: "
+            "lower premium than a full swaption, defined risk. Risk: theta decay is aggressive."
+        ),
+        # ── Risk concepts ────────────────────────────────────────────────
+        "dv01": (
+            "DV01 (Dollar Value of a Basis Point) is the change in price of a bond or swap for "
+            "a 1bp move in yield. A 10Y swap has a DV01 of roughly $900 per $1M notional — meaning "
+            "a 1bp rate move changes the P&L by $900. All curve trades should be DV01-weighted "
+            "to be duration-neutral. Sizing: trade size = risk budget (in $) / DV01 per bp."
+        ),
+        "convexity": (
+            "Convexity is the curvature of the price-yield relationship. Positive convexity means "
+            "a bond gains more when rates fall than it loses when rates rise by the same amount. "
+            "Long-dated bonds and receivers have positive convexity. MBS have negative convexity "
+            "(prepayment risk). Convexity hedging by MBS portfolios can amplify rate moves."
+        ),
+        "z-score": (
+            "A z-score measures how many standard deviations a value is from its historical mean. "
+            "In macro trading: a rolling 3M z-score on a spread, curve point, or basis level tells "
+            "you how stretched it is relative to recent history. z > 1.5 = potential entry for "
+            "mean-reversion. z > 2.0 = historically extreme. Use for entry timing on RV trades."
+        ),
     }
 
     def _find_macro_explanation(self, question: str) -> str:
-        """Search the knowledge base for a relevant explanation of the concept
-        the user is asking about."""
+        """Search the macro knowledge base for the most relevant explanation.
+
+        Matching strategy (in priority order):
+        1. Exact key phrase appears in the question (e.g. "swap spread" in "what is a swap spread?")
+        2. All key words appear in the question (e.g. "vol" + "surface")
+        3. High word overlap between question and explanation text
+        """
         q = question.lower()
+        # Strip common question prefixes for cleaner matching
+        for prefix in ["what is a ", "what is the ", "what are ", "what's a ",
+                        "what's the ", "explain ", "tell me about ", "describe ",
+                        "define ", "how does ", "how do ", "what does "]:
+            if q.startswith(prefix):
+                q = q[len(prefix):]
+                break
+
         best_match = ""
         best_score = 0
         for key, explanation in self.MACRO_EXPLANATIONS.items():
-            key_words = set(key.split())
-            q_words = set(q.split())
-            # Check if key phrase is contained in question
+            score = 0
+            # Exact phrase match in question (highest signal)
             if key in q:
-                score = 100  # exact phrase match
+                score = 200
+            # Also check with underscores removed
+            elif key.replace("_", " ") in q:
+                score = 200
             else:
-                score = len(key_words & q_words) * 10
-            # Also check overlap with explanation keywords
-            exp_words = set(explanation.lower().split()[:50])
-            score += len(q_words & exp_words)
-            if score > best_score and score > 5:
+                # Partial: how many key words appear in question?
+                key_words = set(key.split())
+                q_words = set(q.split())
+                key_hit = len(key_words & q_words)
+                if key_hit == len(key_words) and key_hit > 0:
+                    score = 150  # ALL key words match
+                else:
+                    score = key_hit * 15
+
+            # Boost: overlap with first 60 words of explanation text
+            exp_words = self._meaningful_words(
+                " ".join(explanation.split()[:60])
+            )
+            q_meaningful = self._meaningful_words(q)
+            score += len(q_meaningful & exp_words)
+
+            if score > best_score and score >= 8:
                 best_score = score
                 best_match = explanation
         return best_match
@@ -681,29 +910,60 @@ class MacroLLM:
     # =====================================================================
 
     def classify_question(self, question: str) -> str:
-        q = question.lower()
-        if any(w in q for w in ["why", "explain", "how does", "how do", "what makes",
-                                 "reasoning", "logic", "rationale", "wondering",
-                                 "what is the", "what's the", "how is", "dynamic"]):
-            return "explain"
+        q = question.lower().strip()
+
+        # Correction — highest priority (user is teaching us something)
         if any(w in q for w in ["wrong", "incorrect", "mistake", "error", "not right",
                                  "that's not", "thats not", "should not", "shouldnt",
                                  "dont use", "don't use", "stop using"]):
             return "correction"
-        if any(w in q for w in ["what if", "scenario", "if the", "suppose", "imagine"]):
+
+        # Scenario — "what if"
+        if any(w in q for w in ["what if", "scenario", "if the fed", "if the ecb",
+                                 "if the boe", "if the boj", "suppose", "imagine",
+                                 "if rates", "if inflation"]):
             return "scenario"
-        if any(w in q for w in ["how would you", "what trade", "how to express",
-                                 "how to structure", "what structure"]):
+
+        # Trade idea — user wants a structure
+        if any(w in q for w in ["how would you trade", "how would you express",
+                                 "what trade", "how to express", "how to structure",
+                                 "what structure", "trade idea"]):
             return "trade_idea"
-        if any(w in q for w in ["compare", "vs", "versus", "relative", "between",
-                                 "which is better"]):
-            return "compare"
-        # "tell me more about X trade" → trade_idea
+
+        # "Tell me more about X trade" → trade_idea
         if ("trade" in q or "fly" in q or "butterfly" in q or "steepener" in q
                 or "flattener" in q or "receiver" in q or "payer" in q):
             if any(w in q for w in ["tell me", "more about", "elaborate", "expand",
                                      "walk me through", "break down", "detail"]):
                 return "trade_idea"
+
+        # Compare
+        if any(w in q for w in ["compare", "vs", "versus", "relative", "between",
+                                 "which is better", "difference between"]):
+            return "compare"
+
+        # Explain — broadened to catch common question forms
+        if any(w in q for w in ["why", "explain", "how does", "how do", "what makes",
+                                 "reasoning", "logic", "rationale", "wondering",
+                                 "what is the", "what's the", "how is", "dynamic",
+                                 "what is a", "what are", "what's a", "what does",
+                                 "tell me about", "describe", "define", "meaning of",
+                                 "what do you mean", "can you explain", "walk me through",
+                                 "break down"]):
+            return "explain"
+
+        # Short definitional questions: "swap spread?" or "term premium?"
+        # If question is short and contains a known concept, treat as explain
+        if len(q.split()) <= 5:
+            all_concept_keys = list(self.MACRO_EXPLANATIONS.keys())
+            all_signal_keys = list(self.SIGNAL_KEYWORDS.keys())
+            for key in all_concept_keys:
+                if key.replace("_", " ") in q:
+                    return "explain"
+            for key in all_signal_keys:
+                if key.replace("_", " ") in q:
+                    return "explain"
+
         return "discuss"
 
     # =====================================================================
@@ -908,10 +1168,11 @@ class MacroLLM:
 
     def generate_response(self, briefing_content: str, section_context: str,
                           question: str, chat_history: list) -> str:
-        """Generate a response that directly addresses the user's question
-        using the actual briefing content as the primary source, enhanced
-        by the multi-region regime model, failure mode detection,
-        preference weights, and multi-theme reasoning."""
+        """Generate a response grounded in the question, briefing, and memory."""
+
+        # ---- Auto-load the latest briefing if none was passed ----
+        if not briefing_content or len(briefing_content.strip()) < 50:
+            briefing_content = self._get_last_briefing_content()
 
         # ---- Section name ----
         section_name = ""
@@ -927,16 +1188,12 @@ class MacroLLM:
 
         # ---- Extract signals — ordered by preference weight, multi-theme ----
         q_signals = self.extract_signals(question, preference_weights=pref)
-        # Top-3 active themes for multi-theme reasoning
         active_themes = [t for t, v in q_signals.items() if v][:3]
 
         # ---- Classify briefing regimes once per day ----
         if briefing_content and not self._regime_classified_today:
             self.regime_model.classify_from_briefing(briefing_content)
             self._regime_classified_today = True
-
-        # ---- Regime context ----
-        regime_ctx = self.regime_model.get_context_for_question(question, q_signals)
 
         # ---- Load supplementary context ----
         insights = self._load_insights()
@@ -952,11 +1209,9 @@ class MacroLLM:
             question, section_context, briefing_content
         )
 
-        # On retrieval failure: broaden context search — try full briefing
+        # On retrieval failure: widen search to full briefing
         effective_section = section_context
         if failure_mode == "retrieval_failure":
-            # Widen retrieval: pass empty section_ctx so _find_relevant_section
-            # searches the full briefing instead of the narrow section
             effective_section = ""
 
         # ---- Build primary response ----
@@ -981,33 +1236,33 @@ class MacroLLM:
             parts.append(self._respond_discuss(question, effective_section,
                                                briefing_content, pref=pref))
 
-        # ---- On reasoning_gap: force causal chain explanation ----
+        # ---- On reasoning_gap: add causal chain prompt ----
         if failure_mode == "reasoning_gap":
             parts.append(
                 "\n**Causal chain:**\n"
                 "- Driver → mechanism → market impact → trade expression\n"
-                "- Which variable moves first? What is the transmission channel?\n"
-                "- What is the second-order effect on curve shape or basis?"
+                "- Which variable moves first? What is the transmission channel?"
             )
 
-        # ---- On low_specificity: force instrument anchor ----
+        # ---- On low_specificity: add specificity prompt ----
         if failure_mode == "low_specificity":
             parts.append(
                 "\n**Specificity check:**\n"
                 "- Name the exact tenor, product, or currency pair\n"
-                "- Give a reference level (current or historical z-score)\n"
-                "- What is the DV01 or vega exposure of the recommended structure?"
+                "- Reference level: current vs historical z-score"
             )
 
-        # ---- Multi-theme context note (when 2+ themes active) ----
+        # ---- Multi-theme note (when 2+ themes active) ----
         if len(active_themes) >= 2:
             theme_str = " + ".join(active_themes[:3])
-            parts.append(f"\n_Multi-theme context active: {theme_str}. "
-                         f"Cross-market dynamics may dominate single-factor moves._")
+            parts.append(f"\n_Cross-theme context: {theme_str}_")
 
-        # ---- Regime context ----
-        if regime_ctx:
-            parts.append(regime_ctx)
+        # ---- Regime context — append ONLY if it adds substance ----
+        regime_ctx = self.regime_model.get_context_for_question(question, q_signals)
+        if regime_ctx and len(regime_ctx) > 60:
+            # Skip pure state dumps — only include if there's real narrative
+            if not regime_ctx.strip().startswith("**Current regime states"):
+                parts.append(regime_ctx)
 
         # ---- Supplementary context ----
         supp = self._build_supplementary(
@@ -1019,15 +1274,11 @@ class MacroLLM:
 
         result = "\n\n".join(p for p in parts if p)
 
-        # ---- Thin response fallback ----
+        # ---- Thin response fallback — knowledge base first, then honest ----
         if not result or len(result.strip()) < 30:
-            regime_answer = self.regime_model.get_regime_answer(question, q_signals)
-            if regime_answer:
-                result = regime_answer
-            else:
-                result = self._honest_fallback(question)
+            result = self._honest_fallback(question)
 
-        # ---- Apply learned behavioral constraints (structural pass) ----
+        # ---- Apply learned behavioral constraints ----
         context_str = section_context or ""
         result = self._apply_learned_constraints(result, question=question,
                                                   context=context_str)
@@ -1475,33 +1726,52 @@ class MacroLLM:
     # =====================================================================
 
     def _honest_fallback(self, question: str) -> str:
-        """Last resort — only used when BOTH briefing AND regime model have
-        nothing relevant. This should be rare now that regime reasoning exists."""
+        """Fallback path when no briefing content matched.
+
+        Priority order:
+        1. MACRO_EXPLANATIONS knowledge base (always relevant for definitional questions)
+        2. Knowledge docs (uploaded research)
+        3. Regime model narrative (only if it produces something useful, NOT a raw state dump)
+        4. Honest "I don't have context" message
+        """
+        # 1. Try macro explanations — most common fallback for "what is X" questions
+        explanation = self._find_macro_explanation(question)
+        if explanation:
+            return explanation
+
+        # 2. Try knowledge docs
+        knowledge_docs = self._load_knowledge_docs()
+        relevant_docs = self._find_relevant_knowledge(knowledge_docs, question)
+        if relevant_docs:
+            lines = ["**From uploaded research:**"]
+            for doc in relevant_docs[:2]:
+                lines.append(f"**{doc['title']}:** {doc['summary'][:300]}")
+            return "\n".join(lines)
+
+        # 3. Try regime model — but ONLY if it gives a substantive answer,
+        # not just a state dump
         signals = self.extract_signals(question)
         known_topics = [t for t, v in signals.items() if v]
-
-        # Try regime-based answer one more time
         regime_answer = self.regime_model.get_regime_answer(question, signals)
-        if regime_answer:
-            return regime_answer
+        if regime_answer and len(regime_answer) > 80:
+            # Filter out answers that are just state listings
+            if not regime_answer.startswith("**Current regime states"):
+                return regime_answer
 
+        # 4. Honest admission with helpful guidance
         if known_topics:
             topic_str = ", ".join(known_topics)
             return (
-                f"I recognize this is about **{topic_str}**, but I don't have enough specific "
-                f"context yet to give a fully grounded answer.\n\n"
-                f"My regime model is still learning — the more briefings I process and "
-                f"feedback you give me, the more opinionated I'll become on this topic.\n\n"
-                f"Try clicking on the relevant briefing section, or upload a research doc "
-                f"on this topic to accelerate my learning."
+                f"I recognise this question touches on **{topic_str}**, but today's briefing "
+                f"doesn't contain enough specific data to give a grounded answer.\n\n"
+                f"Try clicking on the relevant briefing section for more context, or ask me "
+                f"a more specific question (e.g. include a tenor, instrument, or currency pair)."
             )
         else:
             return (
-                "I don't have enough context yet on this topic. My regime model "
-                "hasn't seen enough data here to form a view.\n\n"
-                "The more you interact with me — asking questions, giving feedback, "
-                "uploading docs — the faster I learn. Each interaction updates my "
-                "Markov regime model and makes me more opinionated."
+                "I don't have specific information on this topic in today's briefing or my "
+                "knowledge base. Try asking about a specific instrument, curve point, or "
+                "macro concept — or click on a briefing section to focus my context."
             )
 
     def _reason_about_question(self, question, section_ctx, briefing):
@@ -1521,8 +1791,8 @@ class MacroLLM:
                 score = len(q_words & c_words)
                 scored.append((score, c))
             scored.sort(key=lambda x: -x[0])
-            # Only include claims that have real overlap (score >= 2 meaningful words)
-            relevant_claims = [(s, c) for s, c in scored if s >= 2]
+            # Include claims with any meaningful word overlap
+            relevant_claims = [(s, c) for s, c in scored if s >= 1]
             if relevant_claims:
                 lines.append("**Relevant context from the briefing:**")
                 for _, c in relevant_claims[:5]:

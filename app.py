@@ -403,6 +403,19 @@ def api_save_feedback():
         existing_trades = [e for e in existing if not e.get("section")]
         data[date_key] = kept + list(new_sections.values()) + existing_trades
     save_feedback_data(data)
+
+    # Feed section feedback into regime model for learning
+    try:
+        llm = get_macro_llm()
+        for e in entries:
+            note = e.get("note", "")
+            section = e.get("section", e.get("trade", ""))
+            rating = e.get("rating", "")
+            if note and rating:
+                llm.process_section_feedback(section, note, rating)
+    except Exception:
+        pass  # Don't fail the feedback save if regime update fails
+
     return jsonify({"ok": True})
 
 # ── Document knowledge base ────────────────────────────────────────────────────
@@ -504,6 +517,13 @@ def api_upload():
     finally:
         if tmp_path.exists():
             tmp_path.unlink()
+
+@app.route("/api/regime", methods=["GET"])
+@login_required
+def api_regime():
+    """Return current regime snapshot for all 10 regions."""
+    llm = get_macro_llm()
+    return jsonify(llm.get_regime_snapshot())
 
 @app.route("/api/documents", methods=["GET"])
 @login_required

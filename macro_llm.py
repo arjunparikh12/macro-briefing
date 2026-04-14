@@ -22,12 +22,14 @@ import re
 from datetime import datetime
 
 import data_access as db
+from regime_model import MarkovRegimeModel
 
 
 class MacroLLM:
 
     def __init__(self):
         self.memory = self._load_memory()
+        self._init_regime_model()
 
     # =====================================================================
     # MEMORY SYSTEM — persistent across sessions
@@ -36,11 +38,19 @@ class MacroLLM:
     def _load_memory(self):
         return db.load_macro_memory()
 
+    def _init_regime_model(self):
+        """Initialize regime model from saved state or fresh priors."""
+        saved = self.memory.get("regime_system")
+        self.regime_model = MarkovRegimeModel(saved_state=saved)
+        self._regime_classified_today = False
+
     def _save_memory(self):
         if len(self.memory["interactions"]) > 500:
             self.memory["interactions"] = self.memory["interactions"][-500:]
         if len(self.memory["trade_corrections"]) > 200:
             self.memory["trade_corrections"] = self.memory["trade_corrections"][-200:]
+        # Persist regime model state
+        self.memory["regime_system"] = self.regime_model.serialize()
         db.save_macro_memory(self.memory)
 
     def store_interaction(self, context: dict, question: str, answer: str):
@@ -76,8 +86,23 @@ class MacroLLM:
                 "source": "positive_feedback",
                 "section": last.get("section", ""),
             })
+
+        # Update regime model from feedback
+        regime = last.get("regime", "")
+        region = self._regime_to_region(regime)
+        if region:
+            self.regime_model.reinforce_from_feedback(region, positive=(feedback == "good"))
+
         self._save_memory()
         self._sync_learnings_to_briefing()
+
+    def _regime_to_region(self, regime_label: str) -> str:
+        """Map a regime/signal label to a region code for regime feedback."""
+        mapping = {
+            "fed": "USD", "ecb": "EUR", "boe": "GBP", "boj": "JPY",
+            "china": "CNY",
+        }
+        return mapping.get(regime_label, "")
 
     def _extract_learned_rules(self, user_message: str, context: dict):
         msg = user_message.lower()
@@ -290,6 +315,17 @@ class MacroLLM:
                     lines.append(f"- {d}")
 
         summary = "\n".join(lines) if lines else f"Document uploaded: {title}. Content could not be automatically parsed — review manually."
+
+        # Feed document into regime model for signal extraction
+        regime_results = self.regime_model.classify_from_document(raw_text)
+        if regime_results:
+            from regime_model import STATES
+            regime_lines = ["\nRegime signals detected:"]
+            for region, (state_idx, conf) in regime_results.items():
+                regime_lines.append(f"- {region}: {STATES[state_idx]} ({conf:.0%} confidence)")
+            summary += "\n".join(regime_lines)
+            self._save_memory()
+
         return summary[:3000]  # Cap at 3000 chars
 
     def _extract_doc_claims(self, text: str) -> list:
@@ -722,7 +758,8 @@ class MacroLLM:
     def generate_response(self, briefing_content: str, section_context: str,
                           question: str, chat_history: list) -> str:
         """Generate a response that directly addresses the user's question
-        using the actual briefing content as the primary source."""
+        using the actual briefing content as the primary source, enhanced
+        by the multi-region regime model."""
 
         # Determine section name
         section_name = ""
@@ -733,6 +770,17 @@ class MacroLLM:
         # Classify the question
         q_type = self.classify_question(question)
 
+        # Extract signals for regime model
+        q_signals = self.extract_signals(question)
+
+        # Classify briefing regimes once per day
+        if briefing_content and not self._regime_classified_today:
+            self.regime_model.classify_from_briefing(briefing_content)
+            self._regime_classified_today = True
+
+        # Get regime context for this question
+        regime_ctx = self.regime_model.get_context_for_question(question, q_signals)
+
         # Load supplementary context
         insights = self._load_insights()
         feedback_entries = self._load_feedback()
@@ -742,7 +790,7 @@ class MacroLLM:
         corrections = self.retrieve_corrections(question)
         prev_messages = self._parse_chat_history(chat_history)
 
-        # Build the response — QUESTION-FIRST, not regime-first
+        # Build the response — QUESTION-FIRST, regime-enhanced
         parts = []
 
         if q_type == "correction":
@@ -764,6 +812,10 @@ class MacroLLM:
             parts.append(self._respond_discuss(question, section_context,
                                                briefing_content))
 
+        # Append regime context (adds directional opinion)
+        if regime_ctx:
+            parts.append(regime_ctx)
+
         # Append learned context (concisely — only if relevant)
         supp = self._build_supplementary(
             question, section_name, learned_rules, feedback_entries,
@@ -774,9 +826,13 @@ class MacroLLM:
 
         result = "\n\n".join(p for p in parts if p)
 
-        # Final safety net — never return empty
-        if not result or len(result.strip()) < 10:
-            result = self._honest_fallback(question)
+        # If primary response is thin, try regime-based answer BEFORE honest fallback
+        if not result or len(result.strip()) < 30:
+            regime_answer = self.regime_model.get_regime_answer(question, q_signals)
+            if regime_answer:
+                result = regime_answer
+            else:
+                result = self._honest_fallback(question)
 
         # Apply learned behavioral constraints
         result = self._apply_learned_constraints(result)
@@ -788,7 +844,7 @@ class MacroLLM:
     # =====================================================================
 
     def _respond_correction(self, question, section_ctx, briefing, prev_msgs):
-        """User is telling us something is wrong."""
+        """User is telling us something is wrong — update regime model too."""
         lines = ["**Noted — I'll apply this correction going forward.**"]
         lines.append(f"Your point: {question}")
 
@@ -802,6 +858,15 @@ class MacroLLM:
 
         lines.append("\nI've recorded this as a permanent correction. "
                       "Future briefings will incorporate this feedback.")
+
+        # Parse for regime corrections and apply them
+        regime_corrections = self.regime_model.parse_regime_correction(question)
+        if regime_corrections:
+            from regime_model import STATES
+            for region, state_idx in regime_corrections:
+                self.regime_model.apply_user_correction(region, state_idx)
+                lines.append(f"\n**Regime updated:** {region} → {STATES[state_idx]} (high-confidence correction)")
+            self._save_memory()
 
         # If they said something about data sources
         if any(w in question.lower() for w in ["site", "source", "unreliable", "wrong data"]):
@@ -850,7 +915,8 @@ class MacroLLM:
         return "\n".join(lines)
 
     def _respond_scenario(self, question, section_ctx, briefing):
-        """User wants to know 'what if X happens?'"""
+        """User wants to know 'what if X happens?' — use regime transition probs."""
+        from regime_model import STATES, REGIONS, _REGION_KEYWORDS
         lines = [f"**Scenario:** {question}"]
 
         # What does the briefing currently assume?
@@ -861,9 +927,34 @@ class MacroLLM:
                 for c in claims[:3]:
                     lines.append(f"- {c}")
 
+        # Identify which regions are in the scenario
+        q = question.lower()
+        scenario_regions = set()
+        for region, kws in _REGION_KEYWORDS.items():
+            if any(kw in q for kw in kws):
+                scenario_regions.add(region)
+        if not scenario_regions:
+            scenario_regions = {"USD"}  # default
+
+        # Add regime transition probabilities for the scenario
+        lines.append("\n**Regime model probabilities:**")
+        for region in sorted(scenario_regions):
+            r = self.regime_model.regions.get(region, {})
+            state = r.get("current_state")
+            if state is None:
+                continue
+            conf = r.get("confidence", 0)
+            lines.append(f"- {region} is currently in {STATES[state]} ({conf:.0%})")
+            matrix = self.regime_model.get_transition_matrix(region)
+            transitions = [(j, matrix[state][j]) for j in range(len(STATES))
+                           if j != state and matrix[state][j] >= 0.05]
+            transitions.sort(key=lambda x: -x[1])
+            if transitions:
+                for j, prob in transitions[:3]:
+                    lines.append(f"  → {STATES[j]}: {prob:.0%} probability")
+
         # What changes under the scenario?
         lines.append("\n**If this scenario plays out:**")
-        q = question.lower()
         if "cut" in q or "ease" in q or "dovish" in q:
             lines.append("- Front-end rallies (2Y), curve bull steepens")
             lines.append("- USD weakens, risk currencies (AUD, NZD) bid")
@@ -886,6 +977,15 @@ class MacroLLM:
             lines.append("- The key question: which sector of the curve reprices?")
             lines.append("- Check the second-order effects: what does this mean for positioning?")
             lines.append("- What conditional structures give you asymmetry into this outcome?")
+
+        # Add basis divergence if multiple regions involved
+        if len(scenario_regions) >= 2 and "USD" in scenario_regions:
+            lines.append("\n**Basis impact:**")
+            for region in scenario_regions:
+                if region != "USD":
+                    bs = self.regime_model.compute_basis_signal(region, "USD")
+                    if bs["direction"] != "unknown":
+                        lines.append(f"- {bs['explanation']}")
 
         lines.append("\n**Positioning consideration:** Think about what's already priced. "
                       "If the scenario is consensus, the move may already be in the market.")
@@ -1044,32 +1144,33 @@ class MacroLLM:
     # =====================================================================
 
     def _honest_fallback(self, question: str) -> str:
-        """When the MacroLLM doesn't have enough context to answer properly."""
-        q = question.lower()
-
-        # Check if this is a topic we at least recognize
+        """Last resort — only used when BOTH briefing AND regime model have
+        nothing relevant. This should be rare now that regime reasoning exists."""
         signals = self.extract_signals(question)
         known_topics = [t for t, v in signals.items() if v]
+
+        # Try regime-based answer one more time
+        regime_answer = self.regime_model.get_regime_answer(question, signals)
+        if regime_answer:
+            return regime_answer
 
         if known_topics:
             topic_str = ", ".join(known_topics)
             return (
                 f"I recognize this is about **{topic_str}**, but I don't have enough specific "
-                f"context in today's briefing or my knowledge base to give you a grounded answer.\n\n"
-                f"Try:\n"
-                f"- Clicking on the relevant briefing section before asking, so I can use that content\n"
-                f"- Uploading a research doc on this topic to build my knowledge\n"
-                f"- Asking me about something covered in today's briefing — I'm strongest there"
+                f"context yet to give a fully grounded answer.\n\n"
+                f"My regime model is still learning — the more briefings I process and "
+                f"feedback you give me, the more opinionated I'll become on this topic.\n\n"
+                f"Try clicking on the relevant briefing section, or upload a research doc "
+                f"on this topic to accelerate my learning."
             )
         else:
             return (
-                "I don't have enough context to give you a reliable answer on this. "
-                "I'd rather be upfront than guess.\n\n"
-                "I work best when:\n"
-                "- You click on a briefing section first, so I can reference that content\n"
-                "- You ask about topics covered in today's briefing\n"
-                "- You upload research docs to expand what I know\n\n"
-                "The more you interact with me and give feedback, the more I learn."
+                "I don't have enough context yet on this topic. My regime model "
+                "hasn't seen enough data here to form a view.\n\n"
+                "The more you interact with me — asking questions, giving feedback, "
+                "uploading docs — the faster I learn. Each interaction updates my "
+                "Markov regime model and makes me more opinionated."
             )
 
     def _reason_about_question(self, question, section_ctx, briefing):
@@ -1252,6 +1353,32 @@ class MacroLLM:
             question, answer
         )
         return answer
+
+    def get_regime_snapshot(self) -> dict:
+        """Return current regime states for all regions (for API endpoint)."""
+        return self.regime_model.get_regime_snapshot()
+
+    def process_section_feedback(self, section_text: str, note: str,
+                                  rating: str):
+        """Process section-level feedback for regime learning.
+
+        Called when user gives thumbs up/down on a briefing section.
+        """
+        corrections = self.regime_model.parse_feedback_for_regime(note, section_text)
+        if corrections:
+            from regime_model import STATES
+            if rating == "down":
+                # Downvote with regime correction = high-weight override
+                for region, state_idx in corrections:
+                    self.regime_model.apply_user_correction(region, state_idx)
+            else:
+                # Upvote with regime signals = moderate reinforcement
+                for region, state_idx in corrections:
+                    self.regime_model.update_from_observation(
+                        region, state_idx, confidence=0.7, weight=1.5,
+                        source="section_feedback"
+                    )
+            self._save_memory()
 
     def give_feedback(self, feedback: str) -> str:
         self.record_feedback(feedback)

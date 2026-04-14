@@ -165,6 +165,7 @@ def load_macro_memory() -> dict:
         "learned_rules": [],
         "regime_overrides": {},
         "trade_corrections": [],
+        "regime_system": None,
     })
 
 

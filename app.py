@@ -1260,8 +1260,8 @@ HTML = r"""<!DOCTYPE html>
       <div class="card-title">About</div>
       <p style="font-size:13px;color:var(--muted);line-height:1.6">
         <strong style="color:var(--text)">AI Macro Trader</strong> — Daily briefings covering rates, FX, and cross-currency basis.<br><br>
-        Briefings auto-generate at <strong style="color:var(--text)">6 AM ET Mon–Fri</strong> using the Anthropic API + live web search.
-        Two learning systems run in parallel: section/trade feedback and uploaded knowledge base documents are both injected into every prompt.
+        Briefings auto-generate at <strong style="color:var(--text)">6 AM ET Mon–Fri</strong> using live data (FRED, RSS feeds, central bank sources).
+        The macro reasoning engine learns continuously: feedback, corrections, and uploaded research all shape every future briefing and chat response.
       </p>
     </div>
 

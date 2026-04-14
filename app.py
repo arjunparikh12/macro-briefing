@@ -32,6 +32,7 @@ app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024  # 10 MB max upload
 # ── Paths (from shared data_access) ───────────────────────────────────────────
 # All path constants and mkdir calls are in data_access.py.
 # Local aliases for the few places that need direct path access:
+DATA_DIR      = db.DATA_DIR
 BRIEFINGS_DIR = db.BRIEFINGS_DIR
 KNOWLEDGE_DIR = db.KNOWLEDGE_DIR
 

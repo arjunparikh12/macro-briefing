@@ -2184,15 +2184,112 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
         """Title and timestamp."""
         return f"# Macro Briefing — {briefing_date}\n_Generated {now_str}_"
 
+    def _regime_curve_view(self) -> dict:
+        """Derive curve/FX/basis directional views from regime states.
+
+        Returns dict with keys: rates_view, curve_view, fx_view, basis_view,
+        each a short analytical sentence.
+        """
+        from regime_model import STATES
+        views = {}
+        usd_r = self.regime_model.regions.get("USD", {})
+        usd_state = usd_r.get("current_state")
+        eur_r = self.regime_model.regions.get("EUR", {})
+        eur_state = eur_r.get("current_state")
+        gbp_r = self.regime_model.regions.get("GBP", {})
+        gbp_state = gbp_r.get("current_state")
+        jpy_r = self.regime_model.regions.get("JPY", {})
+        jpy_state = jpy_r.get("current_state")
+
+        # Rates view from USD regime
+        if usd_state is not None:
+            s = STATES[usd_state]
+            matrix = self.regime_model.get_transition_matrix("USD")
+            transitions = [(j, matrix[usd_state][j]) for j in range(len(STATES))
+                           if j != usd_state and matrix[usd_state][j] >= 0.10]
+            transitions.sort(key=lambda x: -x[1])
+            next_s = STATES[transitions[0][0]] if transitions else s
+            next_p = transitions[0][1] if transitions else 0
+
+            if "HAWKISH" in s or "RESTRICTIVE" in s:
+                views["rates_view"] = (
+                    f"The Fed is in {s} — front-end anchored, long-end driven by term premium "
+                    f"and supply. With {next_s} as the most probable next state ({next_p:.0%}), "
+                    f"the curve should {'bull steepen if the pivot materialises' if 'TRANSITION' in next_s else 'remain flat to inverted while rates stay restrictive'}."
+                )
+                views["curve_view"] = (
+                    "Curve bias: flattening pressure persists while Fed holds. "
+                    "Watch 2s10s for steepening signals on any dovish data surprise."
+                )
+            elif "TRANSITION" in s:
+                views["rates_view"] = (
+                    f"The Fed is in {s} — the market is pricing the pivot. Front-end should "
+                    f"lead the rally. The key question is speed: {'deep easing' if 'ACCOMMODATIVE' in next_s else 'shallow cycle'} "
+                    f"({next_p:.0%} probability) would {'steepen aggressively' if 'ACCOMMODATIVE' in next_s else 'keep belly cheap'}."
+                )
+                views["curve_view"] = (
+                    "Curve bias: bull steepening. 2Y leads, 5Y lags (belly cheapens on shallow cycle), "
+                    "10Y-30Y mixed on term premium."
+                )
+            elif "ACCOMMODATIVE" in s:
+                views["rates_view"] = (
+                    f"The Fed is in {s} — deep into the easing cycle. Front-end is well-bid, "
+                    f"long-end risk is reflationary bear steepening if {next_s} materialises ({next_p:.0%})."
+                )
+                views["curve_view"] = (
+                    "Curve bias: steepening. Rate level is low, term premium should rebuild. "
+                    "Watch for reflation signals that push 5s30s wider."
+                )
+            else:
+                views["rates_view"] = f"USD regime: {s}. Monitor for directional conviction."
+                views["curve_view"] = "Curve: no strong bias from regime model."
+        else:
+            views["rates_view"] = "USD regime not yet classified — insufficient data."
+            views["curve_view"] = ""
+
+        # FX view from divergence
+        fx_parts = []
+        if usd_state is not None:
+            usd_s = STATES[usd_state]
+            for foreign, pair, region_r, region_state in [
+                ("EUR", "EUR/USD", eur_r, eur_state),
+                ("GBP", "GBP/USD", gbp_r, gbp_state),
+                ("JPY", "USD/JPY", jpy_r, jpy_state),
+            ]:
+                if region_state is not None:
+                    f_s = STATES[region_state]
+                    if usd_s != f_s:
+                        # Derive direction from relative hawkishness
+                        usd_hawk = usd_state  # higher index = more accommodative
+                        f_hawk = region_state
+                        if usd_hawk < f_hawk:
+                            fx_parts.append(
+                                f"{pair}: USD relatively tighter ({usd_s}) vs {foreign} ({f_s}) — "
+                                f"supports USD strength in this pair."
+                            )
+                        else:
+                            fx_parts.append(
+                                f"{pair}: {foreign} relatively tighter ({f_s}) vs USD ({usd_s}) — "
+                                f"supports {foreign} strength."
+                            )
+        views["fx_view"] = " ".join(fx_parts) if fx_parts else "No strong FX divergence signal from regime model."
+
+        # Basis view
+        basis_parts = []
+        for foreign in ["EUR", "GBP", "JPY"]:
+            sig = self.regime_model.compute_basis_signal(foreign, "USD")
+            if sig.get("direction") not in ("unknown", None):
+                basis_parts.append(f"{foreign}/USD: {sig['direction']} bias ({sig.get('explanation', '')})")
+        views["basis_view"] = " ".join(basis_parts) if basis_parts else "No strong basis signal."
+
+        return views
+
     def _briefing_market_summary(self, summaries: str, pref: dict) -> str:
-        """## Market Summary — key developments across rates, FX, funding."""
+        """## Market Summary — analytical narrative across rates, FX, funding."""
         lines = ["## Market Summary"]
 
-        # Pull FRED snapshot claims (they come first in summaries)
-        fred_claims = []
-        for line in summaries.splitlines():
-            if re.search(r'\d+\.?\d*.*as of', line.lower()):
-                fred_claims.append(line.strip("- ").strip())
+        # Get regime-derived views for analytical framing
+        views = self._regime_curve_view()
 
         # Extract directional market claims
         all_claims = self._extract_key_claims(summaries)
@@ -2210,48 +2307,73 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
         funding_claims = [c for c in all_claims
                           if any(k in c.lower() for k in funding_kws)][:3]
 
-        # Paragraph 1: rates
-        if rates_claims:
-            lines.append("")
-            lines.append("**Rates:** " + " ".join(rates_claims[:3]))
+        # Paragraph 1: rates narrative
+        lines.append("")
+        rates_data = " ".join(rates_claims[:3]) if rates_claims else ""
+        lines.append(f"{views.get('rates_view', '')} {rates_data}".strip())
 
-        # Paragraph 2: FX
-        if fx_claims:
+        # Paragraph 2: curve view
+        if views.get("curve_view"):
             lines.append("")
-            lines.append("**FX:** " + " ".join(fx_claims[:3]))
+            lines.append(views["curve_view"])
 
-        # Paragraph 3: funding / basis
-        if funding_claims:
+        # Paragraph 3: FX narrative
+        lines.append("")
+        fx_data = " ".join(fx_claims[:3]) if fx_claims else ""
+        lines.append(f"{views.get('fx_view', '')} {fx_data}".strip())
+
+        # Paragraph 4: funding / basis
+        if funding_claims or views.get("basis_view"):
             lines.append("")
-            lines.append("**Funding & Basis:** " + " ".join(funding_claims[:2]))
+            funding_data = " ".join(funding_claims[:2]) if funding_claims else ""
+            lines.append(f"{views.get('basis_view', '')} {funding_data}".strip())
 
-        # Key levels from FRED
+        # Pull FRED snapshot for key levels
+        fred_claims = []
+        for line in summaries.splitlines():
+            if re.search(r'\d+\.?\d*.*as of', line.lower()):
+                fred_claims.append(line.strip("- ").strip())
         if fred_claims:
             lines.append("")
             lines.append("**Key levels (FRED):**")
-            for c in fred_claims[:15]:
+            for c in fred_claims[:12]:
                 lines.append(f"- {c}")
-
-        # Regime shift flags
-        from regime_model import STATES
-        snapshot = self.regime_model.get_regime_snapshot()
-        if snapshot:
-            regime_shifts = []
-            for region, info in snapshot.items():
-                conf = info.get("confidence", 0)
-                if conf >= 0.50 and region in ("USD", "EUR", "GBP", "JPY"):
-                    state_name = info.get("state_name", "Unknown")
-                    regime_shifts.append(f"{region}: {state_name} ({conf:.0%})")
-            if regime_shifts:
-                lines.append("")
-                lines.append("**Regime flags:** " + "; ".join(regime_shifts))
 
         return "\n".join(lines)
 
     def _briefing_central_bank_watch(self, summaries: str) -> str:
-        """## Central Bank Watch — Fed, ECB, BOE, BOJ policy state."""
+        """## Central Bank Watch — Fed, ECB, BOE, BOJ with analytical framing."""
         from regime_model import STATES
         lines = ["## Central Bank Watch"]
+
+        # Analytical templates for each regime state
+        cb_analysis = {
+            "HAWKISH_TIGHTENING": (
+                "actively tightening. Policy rate trajectory is upward — front-end bears, "
+                "curve flattens. The question is how much further — watch for any softening "
+                "in guidance that signals the terminal rate is approaching."
+            ),
+            "RESTRICTIVE_HOLD": (
+                "holding at restrictive levels. Front-end is anchored by the hold, but "
+                "the market is forward-looking — OIS is already pricing the first cut. "
+                "Curve flattening pressure persists until pivot signals emerge."
+            ),
+            "TRANSITION_EASING": (
+                "in the early stages of easing. Front-end should lead the rally as "
+                "near-term cuts get priced. The key risk is a shallow cycle — if "
+                "cuts disappoint, belly cheapens as the terminal rate stays higher."
+            ),
+            "ACCOMMODATIVE": (
+                "in full accommodation. Rates are low, curve should be steep. "
+                "The risk is reflation — if growth rebounds, long-end sells off "
+                "and the curve bear steepens."
+            ),
+            "REFLATION_OVERSHOOT": (
+                "dealing with overheating / reflation. Term premium rising, long-end "
+                "under pressure. Payer structures and steepeners are favored. "
+                "Watch for hawkish pivot signals."
+            ),
+        }
 
         cb_configs = [
             ("Fed", "USD", ["fed", "fomc", "powell", "federal reserve", "fed funds",
@@ -2271,21 +2393,32 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
 
             lines.append(f"\n**{cb_name}:**")
 
-            # Policy state from regime model
+            # Analytical narrative from regime model
             r = self.regime_model.regions.get(region, {})
             state = r.get("current_state")
             if state is not None:
+                state_name = STATES[state]
                 conf = r.get("confidence", 0)
-                lines.append(f"_Regime: {STATES[state]} ({conf:.0%} confidence)_")
+                analysis = cb_analysis.get(state_name, f"in {state_name}.")
 
-                # Transition probabilities
+                # Transition context
                 matrix = self.regime_model.get_transition_matrix(region)
                 transitions = [(j, matrix[state][j]) for j in range(len(STATES))
                                if j != state and matrix[state][j] >= 0.08]
                 transitions.sort(key=lambda x: -x[1])
+
+                lines.append(f"The {cb_name} is {analysis}")
+
                 if transitions:
-                    t_strs = [f"{STATES[j]} ({p:.0%})" for j, p in transitions[:3]]
-                    lines.append(f"_Transition probabilities: {', '.join(t_strs)}_")
+                    top_t = transitions[0]
+                    next_name = STATES[top_t[0]]
+                    lines.append(
+                        f"Most probable transition: → **{next_name}** ({top_t[1]:.0%}). "
+                        f"{'This would be bullish front-end, curve steepener.' if top_t[0] > state else 'This would be bearish front-end, curve flattener.' if top_t[0] < state else ''}"
+                    )
+                    if len(transitions) > 1:
+                        alt = transitions[1]
+                        lines.append(f"Alternative: → {STATES[alt[0]]} ({alt[1]:.0%}).")
 
             # Data-driven claims
             if claims:
@@ -2304,26 +2437,48 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
             lines.append("\n**Balance Sheet / QT:**")
             for c in qt_claims[:3]:
                 lines.append(f"- {c}")
-
-        # OIS/Futures pricing
-        ois_kws = ["ois", "futures", "pricing", "priced", "cuts priced",
-                   "hikes priced", "implied", "swap pricing"]
-        ois_lines = [l for l in summaries.splitlines()
-                     if any(k in l.lower() for k in ois_kws)]
-        ois_claims = self._extract_key_claims("\n".join(ois_lines[:10]))
-        if ois_claims:
-            lines.append("\n**OIS/Futures Pricing:**")
-            for c in ois_claims[:3]:
-                lines.append(f"- {c}")
+        else:
+            lines.append("\n**Balance Sheet / QT:** Check Bloomberg for reserve levels and QT run-rate. "
+                         "Net liquidity impact drives xccy basis — faster QT = wider basis.")
 
         return "\n".join(lines)
 
     def _briefing_rates_market(self, summaries: str, pref: dict) -> str:
-        """## Rates Market Assessment with 4 subsections."""
+        """## Rates Market Assessment with 4 subsections + analytical framing."""
+        from regime_model import STATES
         lines = ["## Rates Market Assessment"]
+
+        # Get regime context for analytical framing
+        usd_r = self.regime_model.regions.get("USD", {})
+        usd_state = usd_r.get("current_state")
+        usd_name = STATES[usd_state] if usd_state is not None else "Unknown"
 
         # --- Subsection 1: Yield Curve & Term Premium ---
         lines.append("\n### Yield Curve & Term Premium")
+
+        # Analytical framing from regime
+        if usd_state is not None:
+            if "HAWKISH" in usd_name or "RESTRICTIVE" in usd_name:
+                lines.append(
+                    f"With the Fed in {usd_name}, the curve is under flattening pressure. "
+                    "Front-end anchored by restrictive rates, long-end driven by term premium "
+                    "and supply dynamics. Watch for any data miss that could trigger pivot "
+                    "expectations and a steepening impulse."
+                )
+            elif "TRANSITION" in usd_name:
+                lines.append(
+                    f"The Fed is in {usd_name} — the curve should be bull steepening as "
+                    "front-end leads on cut expectations. The belly is the key battleground: "
+                    "a shallow cycle keeps 5Y cheap, a deep cycle richens it. Term premium "
+                    "dynamics at the long end matter for steepener sizing."
+                )
+            elif "ACCOMMODATIVE" in usd_name:
+                lines.append(
+                    f"In {usd_name}, rates are low and the curve should be positively sloped. "
+                    "Term premium should rebuild as the cycle matures. Long-end risk is a "
+                    "reflation-driven bear steepener — watch fiscal dynamics and supply."
+                )
+
         curve_kws = ["curve", "steepen", "flatten", "2s10s", "5s30s", "2s5s",
                      "term premium", "treasury", "yield", "auction", "refunding",
                      "supply", "coupon", "tenor", "10y", "2y", "30y", "5y",
@@ -2334,24 +2489,38 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
         if curve_claims:
             for c in curve_claims[:6]:
                 lines.append(f"- {c}")
-        else:
-            lines.append("- No specific curve data — check Bloomberg for live levels.")
 
-        # FRED yield data inline
+        # FRED yield data
         fred_yield_kws = ["treasury yield", "dgs", "t10y2y", "tips"]
         fred_yields = [l for l in summaries.splitlines()
                        if any(k in l.lower() for k in fred_yield_kws)
                        and re.search(r'\d+\.?\d*', l)]
         if fred_yields:
-            lines.append("\n_FRED levels:_")
             for fy in fred_yields[:6]:
                 lines.append(f"- {fy.strip('- ').strip()}")
 
         # --- Subsection 2: SOFR Futures & Money Markets ---
         lines.append("\n### SOFR Futures & Money Markets")
+
+        # Analytical framing
+        if usd_state is not None:
+            if "TRANSITION" in usd_name or "ACCOMMODATIVE" in usd_name:
+                lines.append(
+                    "SOFR curve should be pricing cuts — check how many are embedded in "
+                    "Whites vs Reds. If Reds are cheap on PCA, that's a mean-reversion "
+                    "entry for a flattener in the SOFR strip. If cuts are fully priced, "
+                    "risk is a repricing higher if data surprises hawkish."
+                )
+            else:
+                lines.append(
+                    "With the Fed on hold/tightening, SOFR front-end is anchored near the "
+                    "target rate. Look for PCA dislocations in Reds/Greens/Blues for "
+                    "relative value — calendar spreads and flies are the cleanest expressions."
+                )
+
         sofr_kws = ["sofr", "fed funds", "front-end", "reds", "greens", "blues",
                      "whites", "repo", "reserve", "srp", "standing repo",
-                     "money market", "z5", "z6", "z7", "z8", "pca"]
+                     "money market", "z5", "z6", "z7", "z8", "pca", "cut", "hike"]
         sofr_lines = [l for l in summaries.splitlines()
                       if any(k in l.lower() for k in sofr_kws)]
         sofr_claims = self._extract_key_claims("\n".join(sofr_lines[:20]))
@@ -2359,10 +2528,16 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
             for c in sofr_claims[:5]:
                 lines.append(f"- {c}")
         else:
-            lines.append("- No specific SOFR curve data — check Bloomberg for contract pricing.")
+            lines.append("- Check Bloomberg for SOFR contract pricing and PCA residuals.")
 
         # --- Subsection 3: Volatility Surface ---
         lines.append("\n### Volatility Surface")
+        lines.append(
+            "Vol surface assessment: left-side (short expiry) prices near-term event risk "
+            "(FOMC, data), right-side (long tail) prices structural uncertainty (fiscal, "
+            "supply, inflation). RV trades: sell the expensive sector, buy cheap, vega-neutral."
+        )
+
         vol_kws = ["swaption", "vol", "volatility", "implied", "realized",
                    "gamma", "vega", "straddle", "move index", "vix",
                    "left side", "right side", "expiry", "tail"]
@@ -2372,8 +2547,6 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
         if vol_claims:
             for c in vol_claims[:5]:
                 lines.append(f"- {c}")
-        else:
-            lines.append("- No specific vol surface data — check Bloomberg for levels.")
 
         # FRED MOVE/VIX
         vix_move = [l for l in summaries.splitlines()
@@ -2382,9 +2555,35 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
         if vix_move:
             for vm in vix_move[:3]:
                 lines.append(f"- {vm.strip('- ').strip()}")
+            # Interpret the level
+            for vm in vix_move[:1]:
+                m = re.search(r'(\d+\.?\d*)', vm)
+                if m:
+                    val = float(m.group(1))
+                    if "move" in vm.lower():
+                        if val > 120:
+                            lines.append("- MOVE above 120 — elevated uncertainty. Favor conditional structures over outrights. Sell expensive vol on the surface.")
+                        elif val > 100:
+                            lines.append("- MOVE above 100 — moderate uncertainty. Watch for vol surface RV opportunities.")
+                        else:
+                            lines.append("- MOVE below 100 — low vol environment. Carry trades work, vol selling is crowded.")
+                    elif "vix" in vm.lower():
+                        if val > 25:
+                            lines.append("- VIX elevated — risk-off. Rates should rally on flight-to-quality, curve bull flattens, basis widens.")
+                        elif val > 18:
+                            lines.append("- VIX moderately elevated — some risk hedging. Watch for spill-over into rates vol.")
+
+        if not vol_claims and not vix_move:
+            lines.append("- Check Bloomberg for swaption vol surface levels and MOVE index.")
 
         # --- Subsection 4: Swap Spreads & Funding ---
         lines.append("\n### Swap Spreads & Funding")
+        lines.append(
+            "Swap spreads reflect Treasury supply dynamics, dealer balance sheet constraints, "
+            "and funding conditions. Negative swap spreads = Treasuries cheap vs swaps "
+            "(supply-driven or SLR constraints). Invoice spreads key for auction hedging."
+        )
+
         ss_kws = ["swap spread", "invoice spread", "asset swap", "funding",
                   "libor", "ois spread", "ctd", "cheapest-to-deliver",
                   "treasury-swap", "maturity-matched"]
@@ -2395,23 +2594,23 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
             for c in ss_claims[:4]:
                 lines.append(f"- {c}")
         else:
-            lines.append("- No specific swap spread data — check Bloomberg for levels.")
-
-        # Swap spread from FRED
-        ss_fred = [l for l in summaries.splitlines()
-                   if "corp oas" in l.lower() and re.search(r'\d+', l)]
-        if ss_fred:
-            for sf in ss_fred[:2]:
-                lines.append(f"- {sf.strip('- ').strip()}")
+            lines.append("- Check Bloomberg for 10Y and 30Y swap spreads and invoice spread levels.")
 
         return "\n".join(lines)
 
     def _briefing_fx_market(self, summaries: str, pref: dict) -> str:
-        """## FX Market Assessment with 3 subsections."""
+        """## FX Market Assessment with 3 subsections + analytical framing."""
+        from regime_model import STATES
         lines = ["## FX Market Assessment"]
+
+        views = self._regime_curve_view()
 
         # --- Subsection 1: G10 Spot & Positioning ---
         lines.append("\n### G10 Spot & Positioning")
+
+        # Analytical FX view from regime divergence
+        lines.append(views.get("fx_view", ""))
+
         spot_kws = ["dxy", "eur/usd", "gbp/usd", "usd/jpy", "aud/usd",
                     "usd/chf", "usd/cad", "dollar", "cable", "euro",
                     "yen", "sterling", "aussie", "positioning", "cftc",
@@ -2422,8 +2621,6 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
         if spot_claims:
             for c in spot_claims[:6]:
                 lines.append(f"- {c}")
-        else:
-            lines.append("- No specific FX spot data — check Bloomberg for live levels.")
 
         # FRED FX data
         fx_fred = [l for l in summaries.splitlines()
@@ -2431,12 +2628,20 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
                           "usd/jpy", "aud/usd", "trade-weighted", "dtwex"])
                    and re.search(r'\d+\.?\d*', l)]
         if fx_fred:
-            lines.append("\n_FRED FX levels:_")
             for ff in fx_fred[:6]:
                 lines.append(f"- {ff.strip('- ').strip()}")
 
+        if not spot_claims and not fx_fred:
+            lines.append("- Check Bloomberg for G10 spot levels and CFTC positioning data.")
+
         # --- Subsection 2: FX Volatility & Hedging Flows ---
         lines.append("\n### FX Volatility & Hedging Flows")
+        lines.append(
+            "FX vol and hedging flows are critical for xccy basis: rising hedge ratios "
+            "by foreign UST holders increase FX forward demand, which directly widens "
+            "the xccy basis. Risk reversals show where the market sees asymmetric FX risk."
+        )
+
         fxvol_kws = ["fx vol", "risk reversal", "skew", "fx option",
                      "hedging", "hedge ratio", "fx forward", "forward demand",
                      "implied vol", "fx implied"]
@@ -2447,28 +2652,15 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
             for c in fxvol_claims[:4]:
                 lines.append(f"- {c}")
         else:
-            lines.append("- No specific FX vol data — check Bloomberg for risk reversals and vol surfaces.")
-        lines.append("- _FX hedging flows directly drive xccy basis — connect to basis section below._")
+            lines.append("- Check Bloomberg for FX risk reversals and implied vol term structures.")
 
         # --- Subsection 3: FX Carry & Forward Dynamics ---
         lines.append("\n### FX Carry & Forward Dynamics")
-        carry_kws = ["carry", "rate differential", "forward point", "fx forward",
-                     "interest rate differential", "fx carry", "forward",
-                     "swap point"]
-        carry_lines = [l for l in summaries.splitlines()
-                       if any(k in l.lower() for k in carry_kws)]
-        carry_claims = self._extract_key_claims("\n".join(carry_lines[:15]))
-        if carry_claims:
-            for c in carry_claims[:4]:
-                lines.append(f"- {c}")
-        else:
-            lines.append("- No specific FX carry data — rate differentials drive carry: Fed vs ECB/BOE/BOJ paths matter most.")
 
-        # CB path divergence for carry context
-        from regime_model import STATES
-        divergence_pairs = []
+        # CB path divergence for carry context — analytical version
         usd_r = self.regime_model.regions.get("USD", {})
         usd_state = usd_r.get("current_state")
+        carry_narratives = []
         for foreign, fx_pair in [("EUR", "EUR/USD"), ("GBP", "GBP/USD"),
                                   ("JPY", "USD/JPY"), ("AUD", "AUD/USD")]:
             f_r = self.regime_model.regions.get(foreign, {})
@@ -2477,69 +2669,129 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
                 usd_s = STATES[usd_state]
                 f_s = STATES[f_state]
                 if usd_s != f_s:
-                    divergence_pairs.append(
-                        f"- {fx_pair}: USD in {usd_s}, {foreign} in {f_s} — "
-                        f"regime divergence creates carry/basis opportunity"
+                    if usd_state < f_state:  # USD tighter
+                        carry_narratives.append(
+                            f"**{fx_pair}**: USD in {usd_s} vs {foreign} in {f_s} — "
+                            f"rate differential favors USD. Positive USD carry in this pair. "
+                            f"Basis implication: widening pressure as USD funding premium rises."
+                        )
+                    else:
+                        carry_narratives.append(
+                            f"**{fx_pair}**: {foreign} in {f_s} vs USD in {usd_s} — "
+                            f"rate differential shifting toward {foreign}. "
+                            f"Basis implication: tightening pressure as USD funding eases."
+                        )
+                else:
+                    carry_narratives.append(
+                        f"**{fx_pair}**: Both in {usd_s} — no carry edge from policy divergence. "
+                        f"Look for micro drivers (growth differential, positioning)."
                     )
-        if divergence_pairs:
-            lines.append("\n_CB regime divergence:_")
-            lines.extend(divergence_pairs[:4])
+
+        if carry_narratives:
+            for cn in carry_narratives[:4]:
+                lines.append(f"- {cn}")
+        else:
+            lines.append("- Rate differentials drive carry: Fed vs ECB/BOE/BOJ paths matter most.")
+
+        carry_kws = ["carry", "rate differential", "forward point", "fx forward",
+                     "interest rate differential", "fx carry", "forward",
+                     "swap point"]
+        carry_lines = [l for l in summaries.splitlines()
+                       if any(k in l.lower() for k in carry_kws)]
+        carry_claims = self._extract_key_claims("\n".join(carry_lines[:15]))
+        if carry_claims:
+            for c in carry_claims[:3]:
+                lines.append(f"- {c}")
 
         return "\n".join(lines)
 
     def _briefing_xccy_basis(self, summaries: str, pref: dict) -> str:
-        """## Cross-Currency Basis — dedicated first-class section."""
+        """## Cross-Currency Basis — analytical, per-pair assessment."""
+        from regime_model import STATES
         lines = ["## Cross-Currency Basis"]
 
-        # Basis pairs: ESTR/SOFR, SONIA/SOFR, TONAR/SOFR, AONIA/SOFR, SARON/SOFR
+        # Analytical preamble
+        lines.append("")
+        lines.append(
+            "Cross-currency basis is the deviation from CIP — the premium/discount to "
+            "borrow USD via FX swaps. Negative basis = expensive USD funding. "
+            "2Y driven by CB balance sheets, front-end slope, swaption vol. "
+            "10Y driven by curve slope, rate vol, swap spreads."
+        )
+
         basis_pairs = [
-            ("ESTR/SOFR", "EUR", ["estr", "eur basis", "estr/sofr"]),
-            ("SONIA/SOFR", "GBP", ["sonia", "gbp basis", "sonia/sofr"]),
-            ("TONAR/SOFR", "JPY", ["tonar", "jpy basis", "tonar/sofr"]),
-            ("AONIA/SOFR", "AUD", ["aonia", "aud basis", "aonia/sofr"]),
-            ("SARON/SOFR", "CHF", ["saron", "chf basis", "saron/sofr"]),
+            ("ESTR/SOFR", "EUR", ["estr", "eur basis", "estr/sofr", "euro"]),
+            ("SONIA/SOFR", "GBP", ["sonia", "gbp basis", "sonia/sofr", "sterling"]),
+            ("TONAR/SOFR", "JPY", ["tonar", "jpy basis", "tonar/sofr", "yen"]),
+            ("AONIA/SOFR", "AUD", ["aonia", "aud basis", "aonia/sofr", "aussie"]),
+            ("SARON/SOFR", "CHF", ["saron", "chf basis", "saron/sofr", "swiss"]),
         ]
 
         for pair_name, foreign, kws in basis_pairs:
-            # Get regime model basis signal
             sig = self.regime_model.compute_basis_signal(foreign, "USD")
             direction = sig.get("direction", "unknown")
             explanation = sig.get("explanation", "")
             score = sig.get("score", 0)
 
+            # Get regime states for analytical context
+            usd_r = self.regime_model.regions.get("USD", {})
+            usd_state = usd_r.get("current_state")
+            f_r = self.regime_model.regions.get(foreign, {})
+            f_state = f_r.get("current_state")
+
             lines.append(f"\n**{pair_name}:**")
 
-            # Data-driven claims from summaries
-            pair_lines = [l for l in summaries.splitlines()
-                          if any(k in l.lower() for k in kws +
-                                 ["basis", "xccy", "cross-currency"])]
-            pair_claims = self._extract_key_claims("\n".join(pair_lines[:10]))
+            # Build analytical narrative for this pair
+            if usd_state is not None and f_state is not None:
+                usd_s = STATES[usd_state]
+                f_s = STATES[f_state]
+                if usd_state != f_state:
+                    if usd_state < f_state:
+                        lines.append(
+                            f"USD ({usd_s}) is tighter than {foreign} ({f_s}). "
+                            f"This regime divergence creates widening pressure on the basis — "
+                            f"USD funding premium should increase as rate differential persists. "
+                            f"At 2Y, CB balance sheet dynamics amplify: if Fed is doing QT while "
+                            f"{foreign} CB is easing, basis widens further."
+                        )
+                    else:
+                        lines.append(
+                            f"{foreign} ({f_s}) is tighter than USD ({usd_s}). "
+                            f"This should tighten the basis — less USD funding premium as "
+                            f"rate differential narrows. Watch for Yankee issuance flows "
+                            f"({foreign} corporates borrowing in USD) which could offset."
+                        )
+                else:
+                    lines.append(
+                        f"Both USD and {foreign} in {usd_s}. No regime divergence — "
+                        f"basis should be driven by flow dynamics (Yankee issuance, "
+                        f"hedging demand, quarter-end) rather than structural forces."
+                    )
 
+            # Data claims
+            pair_lines = [l for l in summaries.splitlines()
+                          if any(k in l.lower() for k in kws)]
+            pair_claims = self._extract_key_claims("\n".join(pair_lines[:10]))
             if pair_claims:
                 for c in pair_claims[:2]:
                     lines.append(f"- {c}")
 
-            # Regime model signal
+            # Regime signal direction
             if direction not in ("unknown", None):
-                lines.append(f"- Regime signal: {explanation}")
-                lines.append(f"- Direction: **{direction}** (score: {score:+.1f})")
+                lines.append(f"- **Signal: {direction.upper()}** (score: {score:+.1f}). {explanation}")
 
-            # Z-score factor driver (from regime model)
-            lines.append(f"- _2Y driven by: CB B/S, front-end slope, 1Yx1Y swaption vol_")
-            lines.append(f"- _10Y driven by: 5s/30s slope, 5Yx5Y rate vol, swap spreads_")
-
-        # General basis context
+        # Structural drivers from data
         basis_kws = ["basis", "xccy", "cross-currency", "funding", "cip",
-                     "yankee", "reverse-yankee", "slr", "swap line"]
+                     "yankee", "reverse-yankee", "slr", "swap line", "quarter-end"]
         basis_gen = [l for l in summaries.splitlines()
                      if any(k in l.lower() for k in basis_kws)]
         basis_claims = self._extract_key_claims("\n".join(basis_gen[:20]))
         if basis_claims:
-            lines.append("\n**Structural drivers:**")
+            lines.append("\n**Structural drivers today:**")
             for c in basis_claims[:4]:
                 lines.append(f"- {c}")
 
-        # Most extreme composite z-score pair
+        # Most actionable pair
         best_pair = None
         best_score = 0
         for foreign in ["EUR", "GBP", "JPY", "AUD", "CHF"]:
@@ -2550,9 +2802,12 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
                 best_pair = (foreign, sig)
         if best_pair:
             f, s = best_pair
-            lines.append(f"\n**Most extreme signal today: {f}/USD basis — "
-                         f"{s.get('direction', 'neutral').upper()} "
-                         f"(score {s.get('score', 0):+.1f})**")
+            d = s.get("direction", "neutral")
+            lines.append(
+                f"\n**Actionable: {f}/USD is the most dislocated pair today — "
+                f"{d.upper()} bias (score {s.get('score', 0):+.1f}). "
+                f"{'Consider pay-basis at 2Y and/or 10Y.' if d == 'widen' else 'Consider receive-basis at 2Y and/or 10Y.' if d == 'tighten' else 'Monitor for entry.'}"
+            )
 
         return "\n".join(lines)
 
@@ -2764,17 +3019,7 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
                          "trade ideas today. Build more observations._")
             return "\n".join(lines)
 
-        # Filter out trades similar to past corrections
-        correction_words = set()
-        for tc in trade_corrections[-20:]:
-            correction_words |= self._meaningful_words(tc.get("bad_answer", ""))
-
         for i, trade in enumerate(all_trade_ideas, 1):
-            trade_words = self._meaningful_words(trade)
-            if len(trade_words & correction_words) >= 5:
-                lines.append(f"\n### Trade {i} — _suppressed (similar to "
-                             f"a past rejected trade)_")
-                continue
             lines.append(f"\n### Trade {i}")
             lines.append(trade)
 

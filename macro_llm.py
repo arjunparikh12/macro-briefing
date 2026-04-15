@@ -2138,18 +2138,19 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
         learned_rules = self.memory.get("learned_rules", [])
         trade_corrections = self.memory.get("trade_corrections", [])
 
-        # ── 5. Synthesize each section ────────────────────────────────────────
+        # ── 5. Synthesize each section (matches original briefing format) ─────
         sections = []
-        sections.append(self._briefing_preamble(briefing_date, now_str,
-                                                  combined_summaries, pref))
-        sections.append(self._briefing_regime_update(combined_summaries))
-        sections.append(self._briefing_macro_themes(combined_summaries, pref,
-                                                      knowledge_docs, insights_list))
-        sections.append(self._briefing_trade_ideas(combined_summaries, pref,
-                                                     feedback_entries,
-                                                     trade_corrections))
-        sections.append(self._briefing_cross_asset(combined_summaries, pref))
-        sections.append(self._briefing_risk_scenarios(combined_summaries, pref))
+        sections.append(self._briefing_header(briefing_date, now_str))
+        sections.append(self._briefing_market_summary(combined_summaries, pref))
+        sections.append(self._briefing_central_bank_watch(combined_summaries))
+        sections.append(self._briefing_rates_market(combined_summaries, pref))
+        sections.append(self._briefing_fx_market(combined_summaries, pref))
+        sections.append(self._briefing_xccy_basis(combined_summaries, pref))
+        sections.append(self._briefing_systematic_signals(combined_summaries, pref))
+        sections.append(self._briefing_key_events(combined_summaries))
+        sections.append(self._briefing_trade_construction(combined_summaries, pref,
+                                                           feedback_entries,
+                                                           trade_corrections))
 
         # ── 6. Apply memory / feedback context footer ─────────────────────────
         footer = self._briefing_memory_footer(learned_rules, feedback_entries,
@@ -2177,195 +2178,550 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
 
         return raw_briefing
 
-    # ── Section synthesisers ──────────────────────────────────────────────────
+    # ── Section synthesisers (matches original briefing format) ──────────────
 
-    def _briefing_preamble(self, briefing_date: str, now_str: str,
-                            summaries: str, pref: dict) -> str:
-        """## Preamble / Market Snapshot"""
-        lines = [f"# Macro Briefing — {briefing_date}",
-                 f"_Generated {now_str}_\n",
-                 "## Preamble / Market Snapshot"]
+    def _briefing_header(self, briefing_date: str, now_str: str) -> str:
+        """Title and timestamp."""
+        return f"# Macro Briefing — {briefing_date}\n_Generated {now_str}_"
+
+    def _briefing_market_summary(self, summaries: str, pref: dict) -> str:
+        """## Market Summary — key developments across rates, FX, funding."""
+        lines = ["## Market Summary"]
 
         # Pull FRED snapshot claims (they come first in summaries)
         fred_claims = []
         for line in summaries.splitlines():
-            # FRED document lines contain "as of" and numeric values
             if re.search(r'\d+\.?\d*.*as of', line.lower()):
                 fred_claims.append(line.strip("- ").strip())
 
-        if fred_claims:
-            lines.append("\n**Key levels (FRED, as of today):**")
-            for c in fred_claims[:12]:
-                lines.append(f"- {c}")
-
-        # Macro narrative — extract directional claims from all summaries
+        # Extract directional market claims
         all_claims = self._extract_key_claims(summaries)
-        q_words = self._meaningful_words(
-            "rates curve yield treasury fed ecb boe boj dollar fx basis vol"
-        )
-        market_claims = [c for c in all_claims
-                         if len(q_words & self._meaningful_words(c)) >= 2][:8]
-        if market_claims:
-            lines.append("\n**Market developments:**")
-            for c in market_claims:
+        rates_kws = ["rate", "yield", "treasury", "curve", "sofr", "swap",
+                     "basis", "bp", "steepen", "flatten"]
+        fx_kws = ["dollar", "dxy", "eur", "gbp", "jpy", "aud", "usd",
+                  "fx", "cable", "currency"]
+        funding_kws = ["funding", "repo", "reserve", "liquidity", "basis",
+                       "sofr", "spread"]
+
+        rates_claims = [c for c in all_claims
+                        if any(k in c.lower() for k in rates_kws)][:5]
+        fx_claims = [c for c in all_claims
+                     if any(k in c.lower() for k in fx_kws)][:4]
+        funding_claims = [c for c in all_claims
+                          if any(k in c.lower() for k in funding_kws)][:3]
+
+        # Paragraph 1: rates
+        if rates_claims:
+            lines.append("")
+            lines.append("**Rates:** " + " ".join(rates_claims[:3]))
+
+        # Paragraph 2: FX
+        if fx_claims:
+            lines.append("")
+            lines.append("**FX:** " + " ".join(fx_claims[:3]))
+
+        # Paragraph 3: funding / basis
+        if funding_claims:
+            lines.append("")
+            lines.append("**Funding & Basis:** " + " ".join(funding_claims[:2]))
+
+        # Key levels from FRED
+        if fred_claims:
+            lines.append("")
+            lines.append("**Key levels (FRED):**")
+            for c in fred_claims[:15]:
                 lines.append(f"- {c}")
 
-        # Views from uploaded knowledge docs
-        doc_views = []
-        for doc_type_list in self._load_knowledge_docs().values():
-            for doc in doc_type_list:
-                views = self._extract_views(doc["summary"])
-                doc_views.extend(views[:2])
-        if doc_views:
-            lines.append("\n**From uploaded research:**")
-            for v in doc_views[:4]:
-                lines.append(f"- {v}")
+        # Regime shift flags
+        from regime_model import STATES
+        snapshot = self.regime_model.get_regime_snapshot()
+        if snapshot:
+            regime_shifts = []
+            for region, info in snapshot.items():
+                conf = info.get("confidence", 0)
+                if conf >= 0.50 and region in ("USD", "EUR", "GBP", "JPY"):
+                    state_name = info.get("state_name", "Unknown")
+                    regime_shifts.append(f"{region}: {state_name} ({conf:.0%})")
+            if regime_shifts:
+                lines.append("")
+                lines.append("**Regime flags:** " + "; ".join(regime_shifts))
 
         return "\n".join(lines)
 
-    def _briefing_regime_update(self, summaries: str) -> str:
-        """## Regime Update"""
+    def _briefing_central_bank_watch(self, summaries: str) -> str:
+        """## Central Bank Watch — Fed, ECB, BOE, BOJ policy state."""
         from regime_model import STATES
-        lines = ["## Regime Update"]
+        lines = ["## Central Bank Watch"]
 
-        snapshot = self.regime_model.get_regime_snapshot()
-        if not snapshot:
-            lines.append("_Regime model initialising — no states classified yet._")
-            return "\n".join(lines)
+        cb_configs = [
+            ("Fed", "USD", ["fed", "fomc", "powell", "federal reserve", "fed funds",
+                            "sofr", "reverse repo", "srp", "dot plot"]),
+            ("ECB", "EUR", ["ecb", "lagarde", "estr", "refi rate",
+                            "deposit facility", "european central bank"]),
+            ("BOE", "GBP", ["boe", "bailey", "sonia", "bank of england", "mpc",
+                            "gilt"]),
+            ("BOJ", "JPY", ["boj", "ueda", "tonar", "yen", "ycc",
+                            "yield curve control", "jgb"]),
+        ]
 
-        # Current states table
-        lines.append("\n**Current policy regime per region:**")
-        lines.append("| Region | State | Confidence | Observations |")
-        lines.append("|--------|-------|-----------|--------------|")
-        for region, info in sorted(snapshot.items()):
-            state_name = info.get("state_name", "Unknown")
-            conf = info.get("confidence", 0)
-            obs = info.get("observations", 0)
-            lines.append(f"| {region} | {state_name} | {conf:.0%} | {obs} |")
+        for cb_name, region, kws in cb_configs:
+            cb_lines = [l for l in summaries.splitlines()
+                        if any(k in l.lower() for k in kws)]
+            claims = self._extract_key_claims("\n".join(cb_lines[:20]))
 
-        # Transition probabilities for USD and EUR (most relevant for the user)
-        for region in ["USD", "EUR", "GBP", "JPY"]:
+            lines.append(f"\n**{cb_name}:**")
+
+            # Policy state from regime model
             r = self.regime_model.regions.get(region, {})
             state = r.get("current_state")
-            if state is None:
-                continue
-            matrix = self.regime_model.get_transition_matrix(region)
-            transitions = [(j, matrix[state][j]) for j in range(len(STATES))
-                           if j != state and matrix[state][j] >= 0.08]
-            transitions.sort(key=lambda x: -x[1])
-            if transitions:
-                lines.append(f"\n**{region} transition probabilities from "
-                              f"{STATES[state]}:**")
-                for j, prob in transitions[:3]:
-                    lines.append(f"- → {STATES[j]}: {prob:.0%}")
+            if state is not None:
+                conf = r.get("confidence", 0)
+                lines.append(f"_Regime: {STATES[state]} ({conf:.0%} confidence)_")
 
-        # Basis divergence signals
-        lines.append("\n**Cross-currency basis signals (regime divergence):**")
-        for foreign in ["EUR", "GBP", "JPY", "AUD", "CHF"]:
-            sig = self.regime_model.compute_basis_signal(foreign, "USD")
-            if sig.get("direction") not in ("unknown", None):
-                lines.append(f"- {foreign}/USD: {sig['explanation']}")
+                # Transition probabilities
+                matrix = self.regime_model.get_transition_matrix(region)
+                transitions = [(j, matrix[state][j]) for j in range(len(STATES))
+                               if j != state and matrix[state][j] >= 0.08]
+                transitions.sort(key=lambda x: -x[1])
+                if transitions:
+                    t_strs = [f"{STATES[j]} ({p:.0%})" for j, p in transitions[:3]]
+                    lines.append(f"_Transition probabilities: {', '.join(t_strs)}_")
 
-        return "\n".join(lines)
+            # Data-driven claims
+            if claims:
+                for c in claims[:4]:
+                    lines.append(f"- {c}")
+            else:
+                lines.append(f"- No specific {cb_name} news in today's data — check Bloomberg.")
 
-    def _briefing_macro_themes(self, summaries: str, pref: dict,
-                                knowledge_docs: dict,
-                                insights_list: list) -> str:
-        """## Key Macro Themes & Theses"""
-        lines = ["## Key Macro Themes & Theses"]
-
-        # Extract all signals across the full summary corpus
-        all_signals = self.extract_signals(summaries, preference_weights=pref)
-        active_themes = [t for t, v in all_signals.items() if v]
-
-        if not active_themes:
-            lines.append("_No dominant themes identified from today's data._")
-            return "\n".join(lines)
-
-        # Build a theme block for each of the top themes
-        for theme in active_themes[:6]:
-            theme_keywords = self.SIGNAL_KEYWORDS.get(theme, [])
-            # Find all summary lines that mention this theme
-            theme_lines = []
-            for line in summaries.splitlines():
-                if any(kw in line.lower() for kw in theme_keywords):
-                    stripped = line.strip("- #").strip()
-                    if len(stripped) > 30:
-                        theme_lines.append(stripped)
-
-            if not theme_lines:
-                continue
-
-            weight = pref.get(theme, 1.0)
-            weight_tag = " ★" if weight >= 1.5 else ""
-            lines.append(f"\n### {theme.upper().replace('_', ' ')}{weight_tag}")
-
-            # Top claims for this theme
-            claims = self._extract_key_claims("\n".join(theme_lines[:20]))
-            for c in claims[:5]:
+        # Balance sheet / QT context
+        qt_kws = ["qt", "qe", "quantitative", "balance sheet", "runoff",
+                   "reinvest", "taper", "reserves"]
+        qt_lines = [l for l in summaries.splitlines()
+                    if any(k in l.lower() for k in qt_kws)]
+        qt_claims = self._extract_key_claims("\n".join(qt_lines[:10]))
+        if qt_claims:
+            lines.append("\n**Balance Sheet / QT:**")
+            for c in qt_claims[:3]:
                 lines.append(f"- {c}")
 
-            # Regime inference for this theme
-            region_map = {"fed": "USD", "ecb": "EUR", "boe": "GBP", "boj": "JPY",
-                          "china": "CNY"}
-            region = region_map.get(theme)
-            if region:
-                r = self.regime_model.regions.get(region, {})
-                state = r.get("current_state")
-                if state is not None:
-                    from regime_model import STATES
-                    lines.append(f"_Regime: {region} is in "
-                                 f"**{STATES[state]}** "
-                                 f"({r.get('confidence', 0):.0%} confidence)_")
-
-            # Structural intuition
-            intuition = self._add_structural_intuition(theme)
-            if intuition:
-                lines.append(intuition)
-
-        # Insights from user's saved notes
-        relevant_insights = []
-        q_sig_text = " ".join(active_themes[:4])
-        for ins in insights_list[-50:]:
-            ins_words = self._meaningful_words(ins.get("insight", ""))
-            sig_words = self._meaningful_words(q_sig_text)
-            if len(ins_words & sig_words) >= 2:
-                relevant_insights.append(ins)
-        if relevant_insights:
-            lines.append("\n**From your saved insights:**")
-            for ins in relevant_insights[:3]:
-                lines.append(f"- {ins.get('insight', '')[:200]}")
-
-        # Markov regime narrative
-        narrative = self.regime_model.get_context_for_question(
-            "what are the key macro themes today", all_signals
-        )
-        if narrative:
-            lines.append(f"\n{narrative}")
+        # OIS/Futures pricing
+        ois_kws = ["ois", "futures", "pricing", "priced", "cuts priced",
+                   "hikes priced", "implied", "swap pricing"]
+        ois_lines = [l for l in summaries.splitlines()
+                     if any(k in l.lower() for k in ois_kws)]
+        ois_claims = self._extract_key_claims("\n".join(ois_lines[:10]))
+        if ois_claims:
+            lines.append("\n**OIS/Futures Pricing:**")
+            for c in ois_claims[:3]:
+                lines.append(f"- {c}")
 
         return "\n".join(lines)
 
-    def _briefing_trade_ideas(self, summaries: str, pref: dict,
-                               feedback_entries: list,
-                               trade_corrections: list) -> str:
-        """## Trade Ideas"""
-        lines = ["## Trade Ideas"]
+    def _briefing_rates_market(self, summaries: str, pref: dict) -> str:
+        """## Rates Market Assessment with 4 subsections."""
+        lines = ["## Rates Market Assessment"]
 
-        # Determine current regime states for trade mapping
+        # --- Subsection 1: Yield Curve & Term Premium ---
+        lines.append("\n### Yield Curve & Term Premium")
+        curve_kws = ["curve", "steepen", "flatten", "2s10s", "5s30s", "2s5s",
+                     "term premium", "treasury", "yield", "auction", "refunding",
+                     "supply", "coupon", "tenor", "10y", "2y", "30y", "5y",
+                     "forward curve", "invert"]
+        curve_lines = [l for l in summaries.splitlines()
+                       if any(k in l.lower() for k in curve_kws)]
+        curve_claims = self._extract_key_claims("\n".join(curve_lines[:25]))
+        if curve_claims:
+            for c in curve_claims[:6]:
+                lines.append(f"- {c}")
+        else:
+            lines.append("- No specific curve data — check Bloomberg for live levels.")
+
+        # FRED yield data inline
+        fred_yield_kws = ["treasury yield", "dgs", "t10y2y", "tips"]
+        fred_yields = [l for l in summaries.splitlines()
+                       if any(k in l.lower() for k in fred_yield_kws)
+                       and re.search(r'\d+\.?\d*', l)]
+        if fred_yields:
+            lines.append("\n_FRED levels:_")
+            for fy in fred_yields[:6]:
+                lines.append(f"- {fy.strip('- ').strip()}")
+
+        # --- Subsection 2: SOFR Futures & Money Markets ---
+        lines.append("\n### SOFR Futures & Money Markets")
+        sofr_kws = ["sofr", "fed funds", "front-end", "reds", "greens", "blues",
+                     "whites", "repo", "reserve", "srp", "standing repo",
+                     "money market", "z5", "z6", "z7", "z8", "pca"]
+        sofr_lines = [l for l in summaries.splitlines()
+                      if any(k in l.lower() for k in sofr_kws)]
+        sofr_claims = self._extract_key_claims("\n".join(sofr_lines[:20]))
+        if sofr_claims:
+            for c in sofr_claims[:5]:
+                lines.append(f"- {c}")
+        else:
+            lines.append("- No specific SOFR curve data — check Bloomberg for contract pricing.")
+
+        # --- Subsection 3: Volatility Surface ---
+        lines.append("\n### Volatility Surface")
+        vol_kws = ["swaption", "vol", "volatility", "implied", "realized",
+                   "gamma", "vega", "straddle", "move index", "vix",
+                   "left side", "right side", "expiry", "tail"]
+        vol_lines = [l for l in summaries.splitlines()
+                     if any(k in l.lower() for k in vol_kws)]
+        vol_claims = self._extract_key_claims("\n".join(vol_lines[:20]))
+        if vol_claims:
+            for c in vol_claims[:5]:
+                lines.append(f"- {c}")
+        else:
+            lines.append("- No specific vol surface data — check Bloomberg for levels.")
+
+        # FRED MOVE/VIX
+        vix_move = [l for l in summaries.splitlines()
+                    if any(k in l.lower() for k in ["vix", "move"])
+                    and re.search(r'\d+\.?\d*', l)]
+        if vix_move:
+            for vm in vix_move[:3]:
+                lines.append(f"- {vm.strip('- ').strip()}")
+
+        # --- Subsection 4: Swap Spreads & Funding ---
+        lines.append("\n### Swap Spreads & Funding")
+        ss_kws = ["swap spread", "invoice spread", "asset swap", "funding",
+                  "libor", "ois spread", "ctd", "cheapest-to-deliver",
+                  "treasury-swap", "maturity-matched"]
+        ss_lines = [l for l in summaries.splitlines()
+                    if any(k in l.lower() for k in ss_kws)]
+        ss_claims = self._extract_key_claims("\n".join(ss_lines[:15]))
+        if ss_claims:
+            for c in ss_claims[:4]:
+                lines.append(f"- {c}")
+        else:
+            lines.append("- No specific swap spread data — check Bloomberg for levels.")
+
+        # Swap spread from FRED
+        ss_fred = [l for l in summaries.splitlines()
+                   if "corp oas" in l.lower() and re.search(r'\d+', l)]
+        if ss_fred:
+            for sf in ss_fred[:2]:
+                lines.append(f"- {sf.strip('- ').strip()}")
+
+        return "\n".join(lines)
+
+    def _briefing_fx_market(self, summaries: str, pref: dict) -> str:
+        """## FX Market Assessment with 3 subsections."""
+        lines = ["## FX Market Assessment"]
+
+        # --- Subsection 1: G10 Spot & Positioning ---
+        lines.append("\n### G10 Spot & Positioning")
+        spot_kws = ["dxy", "eur/usd", "gbp/usd", "usd/jpy", "aud/usd",
+                    "usd/chf", "usd/cad", "dollar", "cable", "euro",
+                    "yen", "sterling", "aussie", "positioning", "cftc",
+                    "trade-weighted"]
+        spot_lines = [l for l in summaries.splitlines()
+                      if any(k in l.lower() for k in spot_kws)]
+        spot_claims = self._extract_key_claims("\n".join(spot_lines[:20]))
+        if spot_claims:
+            for c in spot_claims[:6]:
+                lines.append(f"- {c}")
+        else:
+            lines.append("- No specific FX spot data — check Bloomberg for live levels.")
+
+        # FRED FX data
+        fx_fred = [l for l in summaries.splitlines()
+                   if any(k in l.lower() for k in ["eur/usd", "gbp/usd",
+                          "usd/jpy", "aud/usd", "trade-weighted", "dtwex"])
+                   and re.search(r'\d+\.?\d*', l)]
+        if fx_fred:
+            lines.append("\n_FRED FX levels:_")
+            for ff in fx_fred[:6]:
+                lines.append(f"- {ff.strip('- ').strip()}")
+
+        # --- Subsection 2: FX Volatility & Hedging Flows ---
+        lines.append("\n### FX Volatility & Hedging Flows")
+        fxvol_kws = ["fx vol", "risk reversal", "skew", "fx option",
+                     "hedging", "hedge ratio", "fx forward", "forward demand",
+                     "implied vol", "fx implied"]
+        fxvol_lines = [l for l in summaries.splitlines()
+                       if any(k in l.lower() for k in fxvol_kws)]
+        fxvol_claims = self._extract_key_claims("\n".join(fxvol_lines[:15]))
+        if fxvol_claims:
+            for c in fxvol_claims[:4]:
+                lines.append(f"- {c}")
+        else:
+            lines.append("- No specific FX vol data — check Bloomberg for risk reversals and vol surfaces.")
+        lines.append("- _FX hedging flows directly drive xccy basis — connect to basis section below._")
+
+        # --- Subsection 3: FX Carry & Forward Dynamics ---
+        lines.append("\n### FX Carry & Forward Dynamics")
+        carry_kws = ["carry", "rate differential", "forward point", "fx forward",
+                     "interest rate differential", "fx carry", "forward",
+                     "swap point"]
+        carry_lines = [l for l in summaries.splitlines()
+                       if any(k in l.lower() for k in carry_kws)]
+        carry_claims = self._extract_key_claims("\n".join(carry_lines[:15]))
+        if carry_claims:
+            for c in carry_claims[:4]:
+                lines.append(f"- {c}")
+        else:
+            lines.append("- No specific FX carry data — rate differentials drive carry: Fed vs ECB/BOE/BOJ paths matter most.")
+
+        # CB path divergence for carry context
         from regime_model import STATES
-        regime_map = {}
-        for region, info in self.regime_model.regions.items():
-            state = info.get("current_state")
-            if state is not None:
-                regime_map[region] = STATES[state]
+        divergence_pairs = []
+        usd_r = self.regime_model.regions.get("USD", {})
+        usd_state = usd_r.get("current_state")
+        for foreign, fx_pair in [("EUR", "EUR/USD"), ("GBP", "GBP/USD"),
+                                  ("JPY", "USD/JPY"), ("AUD", "AUD/USD")]:
+            f_r = self.regime_model.regions.get(foreign, {})
+            f_state = f_r.get("current_state")
+            if usd_state is not None and f_state is not None:
+                usd_s = STATES[usd_state]
+                f_s = STATES[f_state]
+                if usd_s != f_s:
+                    divergence_pairs.append(
+                        f"- {fx_pair}: USD in {usd_s}, {foreign} in {f_s} — "
+                        f"regime divergence creates carry/basis opportunity"
+                    )
+        if divergence_pairs:
+            lines.append("\n_CB regime divergence:_")
+            lines.extend(divergence_pairs[:4])
 
-        # Extract signals weighted by preference
+        return "\n".join(lines)
+
+    def _briefing_xccy_basis(self, summaries: str, pref: dict) -> str:
+        """## Cross-Currency Basis — dedicated first-class section."""
+        lines = ["## Cross-Currency Basis"]
+
+        # Basis pairs: ESTR/SOFR, SONIA/SOFR, TONAR/SOFR, AONIA/SOFR, SARON/SOFR
+        basis_pairs = [
+            ("ESTR/SOFR", "EUR", ["estr", "eur basis", "estr/sofr"]),
+            ("SONIA/SOFR", "GBP", ["sonia", "gbp basis", "sonia/sofr"]),
+            ("TONAR/SOFR", "JPY", ["tonar", "jpy basis", "tonar/sofr"]),
+            ("AONIA/SOFR", "AUD", ["aonia", "aud basis", "aonia/sofr"]),
+            ("SARON/SOFR", "CHF", ["saron", "chf basis", "saron/sofr"]),
+        ]
+
+        for pair_name, foreign, kws in basis_pairs:
+            # Get regime model basis signal
+            sig = self.regime_model.compute_basis_signal(foreign, "USD")
+            direction = sig.get("direction", "unknown")
+            explanation = sig.get("explanation", "")
+            score = sig.get("score", 0)
+
+            lines.append(f"\n**{pair_name}:**")
+
+            # Data-driven claims from summaries
+            pair_lines = [l for l in summaries.splitlines()
+                          if any(k in l.lower() for k in kws +
+                                 ["basis", "xccy", "cross-currency"])]
+            pair_claims = self._extract_key_claims("\n".join(pair_lines[:10]))
+
+            if pair_claims:
+                for c in pair_claims[:2]:
+                    lines.append(f"- {c}")
+
+            # Regime model signal
+            if direction not in ("unknown", None):
+                lines.append(f"- Regime signal: {explanation}")
+                lines.append(f"- Direction: **{direction}** (score: {score:+.1f})")
+
+            # Z-score factor driver (from regime model)
+            lines.append(f"- _2Y driven by: CB B/S, front-end slope, 1Yx1Y swaption vol_")
+            lines.append(f"- _10Y driven by: 5s/30s slope, 5Yx5Y rate vol, swap spreads_")
+
+        # General basis context
+        basis_kws = ["basis", "xccy", "cross-currency", "funding", "cip",
+                     "yankee", "reverse-yankee", "slr", "swap line"]
+        basis_gen = [l for l in summaries.splitlines()
+                     if any(k in l.lower() for k in basis_kws)]
+        basis_claims = self._extract_key_claims("\n".join(basis_gen[:20]))
+        if basis_claims:
+            lines.append("\n**Structural drivers:**")
+            for c in basis_claims[:4]:
+                lines.append(f"- {c}")
+
+        # Most extreme composite z-score pair
+        best_pair = None
+        best_score = 0
+        for foreign in ["EUR", "GBP", "JPY", "AUD", "CHF"]:
+            sig = self.regime_model.compute_basis_signal(foreign, "USD")
+            s = abs(sig.get("score", 0))
+            if s > best_score:
+                best_score = s
+                best_pair = (foreign, sig)
+        if best_pair:
+            f, s = best_pair
+            lines.append(f"\n**Most extreme signal today: {f}/USD basis — "
+                         f"{s.get('direction', 'neutral').upper()} "
+                         f"(score {s.get('score', 0):+.1f})**")
+
+        return "\n".join(lines)
+
+    def _briefing_systematic_signals(self, summaries: str, pref: dict) -> str:
+        """## Systematic Signal Context — APM z-score logic synthesis."""
+        from regime_model import STATES
+        lines = ["## Systematic Signal Context"]
+
+        # Run signals through the extraction engine
         signals = self.extract_signals(summaries, preference_weights=pref)
         active = [t for t, v in signals.items() if v]
 
+        # CB balance sheet signals
+        lines.append("\n**CB Balance Sheet Expansion/Contraction:**")
+        qt_kws = ["qt", "qe", "balance sheet", "runoff", "taper",
+                  "reserves", "liquidity"]
+        qt_lines = [l for l in summaries.splitlines()
+                    if any(k in l.lower() for k in qt_kws)]
+        qt_claims = self._extract_key_claims("\n".join(qt_lines[:10]))
+        if qt_claims:
+            for c in qt_claims[:3]:
+                lines.append(f"- {c}")
+        else:
+            lines.append("- No specific B/S data — check Bloomberg for reserve levels and QT pace.")
+
+        # SOFR front-end slope
+        lines.append("\n**SOFR Front-End Slope:**")
+        sofr_lines = [l for l in summaries.splitlines()
+                      if any(k in l.lower() for k in
+                             ["sofr", "front-end", "reds", "greens", "whites"])]
+        sofr_claims = self._extract_key_claims("\n".join(sofr_lines[:10]))
+        if sofr_claims:
+            for c in sofr_claims[:2]:
+                lines.append(f"- {c}")
+            lines.append("- _Implication for 2Y basis: steep = easing priced = basis tightener_")
+        else:
+            lines.append("- Check SOFR futures curve for easing/holding pricing.")
+
+        # Swaption vol context
+        lines.append("\n**Swaption Vol (1Yx1Y proxy):**")
+        vol_lines = [l for l in summaries.splitlines()
+                     if any(k in l.lower() for k in
+                            ["swaption", "vol", "move", "vix", "implied"])]
+        vol_claims = self._extract_key_claims("\n".join(vol_lines[:10]))
+        if vol_claims:
+            for c in vol_claims[:2]:
+                lines.append(f"- {c}")
+        else:
+            lines.append("- Check Bloomberg for 1Yx1Y vol levels.")
+
+        # Per-currency composite signal synthesis
+        lines.append("\n**Composite Signals by Currency:**")
+        for foreign in ["EUR", "GBP", "JPY", "AUD"]:
+            sig = self.regime_model.compute_basis_signal(foreign, "USD")
+            direction = sig.get("direction", "neutral")
+            score = sig.get("score", 0)
+            explanation = sig.get("explanation", "")
+
+            f_r = self.regime_model.regions.get(foreign, {})
+            f_state = f_r.get("current_state")
+            state_str = STATES[f_state] if f_state is not None else "Unknown"
+
+            lines.append(f"- **{foreign}**: 2Y signal = {'pay' if direction == 'widen' else 'receive' if direction == 'tighten' else 'neutral'} basis; "
+                         f"10Y signal = {'widen' if score > 0 else 'tighten' if score < 0 else 'neutral'}. "
+                         f"Regime: {state_str}. {explanation}")
+
+        # Most interesting dislocation
+        dislocations = []
+        for foreign in ["EUR", "GBP", "JPY", "AUD", "CHF"]:
+            sig = self.regime_model.compute_basis_signal(foreign, "USD")
+            s = abs(sig.get("score", 0))
+            if s > 0:
+                dislocations.append((s, foreign, sig))
+        dislocations.sort(reverse=True)
+        if dislocations:
+            top = dislocations[0]
+            lines.append(f"\n**Most interesting dislocation: {top[1]}/USD at "
+                         f"{top[2].get('direction', 'neutral')} "
+                         f"(score {top[2].get('score', 0):+.1f})**")
+
+        # PCA cheapness/richness
+        lines.append("\n**SOFR Curve RV:**")
+        lines.append("- Check PCA residuals on Reds/Greens/Blues for mean-reversion setups.")
+        lines.append("- Check swap curve z-scores (2s5s10s fly, 5s10s30s fly) for entry points.")
+
+        return "\n".join(lines)
+
+    def _briefing_key_events(self, summaries: str) -> str:
+        """## Key Events Ahead — data, CB speakers, auctions, meetings."""
+        lines = ["## Key Events Ahead"]
+
+        # Data releases
+        data_kws = ["data", "release", "print", "cpi", "nfp", "payrolls",
+                    "pmi", "ism", "retail sales", "gdp", "pce", "ppi",
+                    "housing", "jobless", "claims", "employment",
+                    "consensus", "estimate", "survey"]
+        data_lines = [l for l in summaries.splitlines()
+                      if any(k in l.lower() for k in data_kws)]
+        data_claims = self._extract_key_claims("\n".join(data_lines[:20]))
+        if data_claims:
+            lines.append("\n**Data Releases:**")
+            for c in data_claims[:5]:
+                lines.append(f"- {c}")
+
+        # CB speakers
+        speaker_kws = ["speech", "speak", "remark", "testimony", "powell",
+                       "lagarde", "bailey", "ueda", "waller", "williams",
+                       "bowman", "barr", "bullard", "mester", "kashkari",
+                       "bostic", "daly", "goolsbee", "harker"]
+        speaker_lines = [l for l in summaries.splitlines()
+                         if any(k in l.lower() for k in speaker_kws)]
+        speaker_claims = self._extract_key_claims("\n".join(speaker_lines[:15]))
+        if speaker_claims:
+            lines.append("\n**CB Speakers:**")
+            for c in speaker_claims[:4]:
+                lines.append(f"- {c}")
+
+        # Auctions
+        auction_kws = ["auction", "treasury auction", "bill auction",
+                       "coupon auction", "refunding", "tail", "stop-through",
+                       "bid-to-cover"]
+        auction_lines = [l for l in summaries.splitlines()
+                         if any(k in l.lower() for k in auction_kws)]
+        auction_claims = self._extract_key_claims("\n".join(auction_lines[:10]))
+        if auction_claims:
+            lines.append("\n**Treasury Auctions:**")
+            for c in auction_claims[:3]:
+                lines.append(f"- {c}")
+
+        # CB meetings
+        meeting_kws = ["fomc", "ecb meeting", "boe meeting", "boj meeting",
+                       "mpc", "governing council", "rate decision",
+                       "meeting date"]
+        meeting_lines = [l for l in summaries.splitlines()
+                         if any(k in l.lower() for k in meeting_kws)]
+        meeting_claims = self._extract_key_claims("\n".join(meeting_lines[:10]))
+        if meeting_claims:
+            lines.append("\n**CB Meetings:**")
+            for c in meeting_claims[:3]:
+                lines.append(f"- {c}")
+
+        # Geopolitical / fiscal events
+        geo_kws = ["tariff", "trade war", "geopolit", "election", "fiscal",
+                   "debt ceiling", "shutdown", "sanction", "conflict"]
+        geo_lines = [l for l in summaries.splitlines()
+                     if any(k in l.lower() for k in geo_kws)]
+        geo_claims = self._extract_key_claims("\n".join(geo_lines[:10]))
+        if geo_claims:
+            lines.append("\n**Geopolitical / Fiscal:**")
+            for c in geo_claims[:3]:
+                lines.append(f"- {c}")
+
+        if len(lines) == 1:
+            lines.append("\n_No specific upcoming events identified in today's data — check Bloomberg calendar._")
+
+        return "\n".join(lines)
+
+    def _briefing_trade_construction(self, summaries: str, pref: dict,
+                                      feedback_entries: list,
+                                      trade_corrections: list) -> str:
+        """## Trade Construction Context — 2-3 original trade ideas."""
+        lines = ["## Trade Construction Context"]
+        lines.append("")
+        lines.append("_Original trade frameworks generated from today's data. "
+                     "Each trade has: structure, rationale, carry/roll, entry logic, risk._")
+
+        from regime_model import STATES
+
         # --- Trade idea generation via Markov transition logic ---
-        # For each major region, determine the most likely next state transition
-        # and map it to a trade structure. This is the Markovian approach.
         transition_trades = []
         for region in ["USD", "EUR", "GBP", "JPY"]:
             r = self.regime_model.regions.get(region, {})
@@ -2373,7 +2729,7 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
             if state is None:
                 continue
             conf = r.get("confidence", 0)
-            if conf < 0.20:   # too uncertain — skip
+            if conf < 0.20:
                 continue
             matrix = self.regime_model.get_transition_matrix(region)
             transitions = [(j, matrix[state][j]) for j in range(len(STATES))
@@ -2390,10 +2746,11 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
             if trade:
                 transition_trades.append(trade)
 
-        # Basis RV trade based on divergence signals
+        # Basis RV trade
         basis_trade = self._generate_basis_trade(summaries, pref)
 
-        # Vol trade if vol signals are active
+        # Vol trade
+        signals = self.extract_signals(summaries, preference_weights=pref)
         vol_trade = None
         if signals.get("vol"):
             vol_trade = self._generate_vol_trade(summaries, pref)
@@ -2403,7 +2760,7 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
                            if t]
 
         if not all_trade_ideas:
-            lines.append("_Insufficient regime conviction to generate structured "
+            lines.append("\n_Insufficient regime conviction to generate structured "
                          "trade ideas today. Build more observations._")
             return "\n".join(lines)
 
@@ -2415,10 +2772,10 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
         for i, trade in enumerate(all_trade_ideas, 1):
             trade_words = self._meaningful_words(trade)
             if len(trade_words & correction_words) >= 5:
-                lines.append(f"\n### Trade Idea {i} — _suppressed (similar to "
+                lines.append(f"\n### Trade {i} — _suppressed (similar to "
                              f"a past rejected trade)_")
                 continue
-            lines.append(f"\n### Trade Idea {i}")
+            lines.append(f"\n### Trade {i}")
             lines.append(trade)
 
         # Good feedback patterns
@@ -2431,6 +2788,8 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
 
         return "\n".join(lines)
 
+    # ── Trade idea generators (used by _briefing_trade_construction) ─────
+
     def _map_regime_transition_to_trade(self, region: str,
                                          current: str, next_state: str,
                                          probability: float,
@@ -2439,7 +2798,6 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
         Given a region's current state and most probable next state, construct
         a trade idea that gives maximal exposure to that transition.
         """
-        # Extract region-relevant claims from the summary corpus
         region_keywords = {
             "USD": ["fed", "fomc", "powell", "sofr", "treasury", "us rate"],
             "EUR": ["ecb", "lagarde", "estr", "euro", "bund"],
@@ -2452,10 +2810,7 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
         evidence = self._extract_key_claims("\n".join(region_lines[:20]))
         evidence_str = "; ".join(evidence[:3]) if evidence else "No specific evidence"
 
-        # Transition → trade logic
-        # Maps (current_state_keyword, next_state_keyword) → trade structure
         if "RESTRICTIVE" in current and "TRANSITION" in next_state:
-            # CB pivoting dovish — front-end rally likely
             return (
                 f"**{region} Pivot Trade — Receive Front-End**\n"
                 f"- Structure: Receive 2Y {region} swap, DV01-weighted against a short 10Y receiver "
@@ -2467,7 +2822,6 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
                 f"- Risk: inflation re-acceleration delays pivot; size conservatively"
             )
         elif "TRANSITION" in current and "ACCOMMODATIVE" in next_state:
-            # Deep easing cycle — bull steepener
             return (
                 f"**{region} Easing Cycle — Bull Steepener**\n"
                 f"- Structure: Receive 2Y / Pay 10Y {region} swap (2s10s steepener), DV01-neutral\n"
@@ -2479,7 +2833,6 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
                 f"- Risk: term premium spike (fiscal/supply) offsets front-end rally"
             )
         elif "HAWKISH" in current and "RESTRICTIVE" in next_state:
-            # Hiking stopping — belly richening fades
             return (
                 f"**{region} Peak Hike — Belly Cheapening Fly**\n"
                 f"- Structure: 2s5s10s belly-cheapening fly. Buy 2Y + 10Y wings, sell 5Y belly. "
@@ -2492,7 +2845,6 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
                 f"- Risk: surprise cut accelerates belly richening"
             )
         elif "ACCOMMODATIVE" in current and "REFLATION" in next_state:
-            # Recovery — steepeners, payers
             return (
                 f"**{region} Reflation Trade — Forward Steepener / Payer**\n"
                 f"- Structure: Pay 5Y {region} swap 1Y forward (1Yx5Y payer) or "
@@ -2505,7 +2857,6 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
                 f"- Risk: growth disappointment kills reflation thesis"
             )
         else:
-            # Generic RV within current regime
             return (
                 f"**{region} Regime Hold — Curve RV**\n"
                 f"- Structure: Monitor current regime stability in {current}. "
@@ -2531,7 +2882,6 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
         direction = sig["direction"]
         explanation = sig.get("explanation", "")
 
-        # Extract relevant basis evidence from summaries
         basis_kws = ["basis", "xccy", "cross-currency", "funding", "cip"]
         basis_lines = [l for l in summaries.splitlines()
                        if any(k in l.lower() for k in basis_kws)]
@@ -2560,7 +2910,6 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
         evidence = self._extract_key_claims("\n".join(vol_lines[:15]))
         evidence_str = "; ".join(evidence[:2]) if evidence else "Vol signals active in data"
 
-        # Check if move/vix elevated from FRED data (proxy: check summaries for MOVE)
         move_elevated = any("move" in l.lower() and
                             re.search(r'\d{3,}', l) for l in vol_lines)
 
@@ -2582,111 +2931,6 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
                 "- Entry: when near-term vol is cheap relative to realized vol\n"
                 "- Risk: event is delayed or cancelled — near-term vol collapses"
             )
-
-    def _briefing_cross_asset(self, summaries: str, pref: dict) -> str:
-        """## Cross-Asset Context"""
-        lines = ["## Cross-Asset Context"]
-
-        # FX
-        fx_kws = self.SIGNAL_KEYWORDS["fx"]
-        fx_lines = [l for l in summaries.splitlines()
-                    if any(k in l.lower() for k in fx_kws)]
-        fx_claims = self._extract_key_claims("\n".join(fx_lines[:20]))
-        if fx_claims:
-            lines.append("\n### FX & Carry")
-            for c in fx_claims[:6]:
-                lines.append(f"- {c}")
-
-        # Vol
-        vol_kws = self.SIGNAL_KEYWORDS["vol"]
-        vol_lines = [l for l in summaries.splitlines()
-                     if any(k in l.lower() for k in vol_kws)]
-        vol_claims = self._extract_key_claims("\n".join(vol_lines[:15]))
-        if vol_claims:
-            lines.append("\n### Rates Volatility")
-            for c in vol_claims[:4]:
-                lines.append(f"- {c}")
-
-        # Basis
-        basis_kws = self.SIGNAL_KEYWORDS["basis"]
-        basis_lines = [l for l in summaries.splitlines()
-                       if any(k in l.lower() for k in basis_kws)]
-        basis_claims = self._extract_key_claims("\n".join(basis_lines[:15]))
-        if basis_claims:
-            lines.append("\n### Cross-Currency Basis")
-            for c in basis_claims[:4]:
-                lines.append(f"- {c}")
-        else:
-            # Fallback: regime model basis signals
-            lines.append("\n### Cross-Currency Basis (regime model signals)")
-            for foreign in ["EUR", "GBP", "JPY", "AUD"]:
-                sig = self.regime_model.compute_basis_signal(foreign, "USD")
-                if sig.get("direction") not in ("unknown", None):
-                    lines.append(f"- {sig['explanation']}")
-
-        # Positioning
-        pos_kws = self.SIGNAL_KEYWORDS["positioning"]
-        pos_lines = [l for l in summaries.splitlines()
-                     if any(k in l.lower() for k in pos_kws)]
-        pos_claims = self._extract_key_claims("\n".join(pos_lines[:10]))
-        if pos_claims:
-            lines.append("\n### Positioning & Flows")
-            for c in pos_claims[:3]:
-                lines.append(f"- {c}")
-
-        # Preference-driven injection
-        response_so_far = "\n".join(lines).lower()
-        self._inject_preference_sections(lines, pref, response_so_far,
-                                          "", summaries, "cross asset context")
-
-        return "\n".join(lines)
-
-    def _briefing_risk_scenarios(self, summaries: str, pref: dict) -> str:
-        """## Risk & Scenarios"""
-        from regime_model import STATES
-        lines = ["## Risk & Scenarios"]
-
-        # Identify key event risks in the data
-        event_kws = ["auction", "data release", "speech", "meeting", "decision",
-                     "cpi", "payrolls", "nfp", "fomc", "ecb", "boe", "boj"]
-        event_lines = [l for l in summaries.splitlines()
-                       if any(k in l.lower() for k in event_kws)]
-        event_claims = self._extract_key_claims("\n".join(event_lines[:20]))
-        if event_claims:
-            lines.append("\n### Key Events & Catalysts")
-            for c in event_claims[:6]:
-                lines.append(f"- {c}")
-
-        # Regime tail risks — states that could be forced by the data
-        lines.append("\n### Regime Tail Risks")
-        for region in ["USD", "EUR"]:
-            r = self.regime_model.regions.get(region, {})
-            state = r.get("current_state")
-            if state is None:
-                continue
-            matrix = self.regime_model.get_transition_matrix(region)
-            # Skip-state transitions (non-adjacent states) = tail risk
-            skip_transitions = [(j, matrix[state][j]) for j in range(len(STATES))
-                                 if abs(j - state) >= 2 and matrix[state][j] >= 0.03]
-            skip_transitions.sort(key=lambda x: -x[1])
-            for j, prob in skip_transitions[:2]:
-                lines.append(
-                    f"- {region} skip-state tail: {STATES[state]} → {STATES[j]} "
-                    f"({prob:.0%} probability) — "
-                    f"{'would drive curve bear steepener, basis widening' if j > state else 'would drive aggressive rally, curve flattening'}"
-                )
-
-        # Standard scenario map
-        lines.append("\n### Scenario Framework")
-        lines.append("| Scenario | Curve | Basis | FX | Trade |")
-        lines.append("|----------|-------|-------|----|-------|")
-        lines.append("| Surprise hike / hawkish hold | Bear flatten | Widen | USD↑ | Payer spreads, flatteners |")
-        lines.append("| Surprise cut / dovish pivot | Bull steepen | Tighten | USD↓ | Receivers, steepeners |")
-        lines.append("| Inflation re-acceleration | Bear steepen | Widen | USD↑ | 5s30s payers, short breakevens |")
-        lines.append("| Risk-off / recession fear | Bull flatten | Tighten initially | JPY↑ | Long duration, conditional structures |")
-        lines.append("| Fiscal shock / supply surge | Long-end sell-off | Widen | USD mixed | Belly flies, long-end vols |")
-
-        return "\n".join(lines)
 
     def _briefing_memory_footer(self, learned_rules: list,
                                  feedback_entries: list,

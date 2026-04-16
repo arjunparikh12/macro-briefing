@@ -47,6 +47,338 @@ class MacroLLM:
         self.regime_model = MarkovRegimeModel(saved_state=saved)
         self._regime_classified_today = False
 
+    # =====================================================================
+    # RELATIVE VALUE SCORING — pairwise CB and FX frameworks
+    # =====================================================================
+
+    # State-to-hawkishness ordinal: higher = more hawkish
+    _STATE_HAWKISHNESS = {
+        "ACCOMMODATIVE": 0,
+        "TRANSITION_EASING": 1,
+        "REFLATION_OVERSHOOT": 2,
+        "RESTRICTIVE_HOLD": 3,
+        "HAWKISH_TIGHTENING": 4,
+    }
+
+    # Commodity beta: positive = commodity exporter (benefits from higher commodities)
+    _COMMODITY_BETA = {
+        "USD": 0.0, "EUR": -0.1, "GBP": -0.05, "JPY": -0.3,
+        "AUD": 0.6, "CAD": 0.5, "NZD": 0.3, "CHF": -0.1,
+        "NOK": 0.5, "SEK": 0.1,
+    }
+
+    def compute_relative_cb_score(self, country_a: str, country_b: str) -> dict:
+        """Compute relative hawkishness score between two CBs.
+
+        Decomposes into:
+        - Policy stance (regime state ordinal)
+        - Transition momentum (probability of tightening vs easing)
+        - Confidence (data density)
+
+        Returns dict with: score (positive = A more hawkish), breakdown, narrative.
+        """
+        from regime_model import STATES
+
+        ra = self.regime_model.regions.get(country_a, {})
+        rb = self.regime_model.regions.get(country_b, {})
+        state_a = ra.get("current_state")
+        state_b = rb.get("current_state")
+
+        if state_a is None or state_b is None:
+            return {"score": 0, "breakdown": {}, "narrative": "Insufficient regime data."}
+
+        name_a = STATES[state_a]
+        name_b = STATES[state_b]
+
+        # 1. Policy stance component (ordinal distance)
+        hawk_a = self._STATE_HAWKISHNESS.get(name_a, 2)
+        hawk_b = self._STATE_HAWKISHNESS.get(name_b, 2)
+        stance_score = hawk_a - hawk_b  # positive = A more hawkish
+
+        # 2. Transition momentum: net probability of hawkish vs dovish moves
+        def net_hawkish_momentum(region_name):
+            r = self.regime_model.regions.get(region_name, {})
+            st = r.get("current_state")
+            if st is None:
+                return 0
+            matrix = self.regime_model.get_transition_matrix(region_name)
+            # Sum probability-weighted direction: higher state = hawkish
+            momentum = 0
+            for j in range(len(STATES)):
+                if j != st:
+                    momentum += matrix[st][j] * (self._STATE_HAWKISHNESS.get(STATES[j], 2) - self._STATE_HAWKISHNESS.get(STATES[st], 2))
+            return momentum
+
+        mom_a = net_hawkish_momentum(country_a)
+        mom_b = net_hawkish_momentum(country_b)
+        momentum_score = mom_a - mom_b  # positive = A gaining hawkish momentum
+
+        # 3. Confidence adjustment
+        conf_a = ra.get("confidence", 0.5)
+        conf_b = rb.get("confidence", 0.5)
+
+        # Composite score
+        composite = (stance_score * 1.5) + (momentum_score * 2.0)
+        # Scale confidence: low confidence dampens the signal
+        avg_conf = (conf_a + conf_b) / 2
+        composite *= min(avg_conf * 2, 1.0)  # cap at 1x
+
+        breakdown = {
+            "stance": stance_score,
+            "momentum": round(momentum_score, 2),
+            "conf_a": round(conf_a, 2),
+            "conf_b": round(conf_b, 2),
+            "composite": round(composite, 2),
+        }
+
+        # Narrative
+        if abs(composite) < 0.3:
+            direction = "roughly neutral"
+            bias = "no strong directional bias from CB divergence"
+        elif composite > 0:
+            direction = f"{country_a} is more hawkish"
+            bias = f"{country_a} strength bias"
+        else:
+            direction = f"{country_b} is more hawkish"
+            bias = f"{country_b} strength bias"
+
+        narrative = (
+            f"{country_a} ({name_a}) vs {country_b} ({name_b}): {direction}. "
+            f"Stance gap: {stance_score:+d}, momentum gap: {momentum_score:+.2f}. "
+            f"Composite: {composite:+.1f} → {bias}."
+        )
+
+        return {"score": round(composite, 2), "breakdown": breakdown, "narrative": narrative}
+
+    def compute_fx_score(self, currency: str) -> dict:
+        """4-pillar FX scoring for a single currency.
+
+        Pillars:
+        1. Rates differential (hawkishness score vs USD)
+        2. Growth momentum (regime state proxy)
+        3. Terms of trade / commodity exposure
+        4. Positioning proxy (crowding from feedback/memory)
+
+        Returns dict with: total_score, pillar_scores, narrative.
+        """
+        from regime_model import STATES
+
+        # Pillar 1: Rates differential vs USD
+        if currency == "USD":
+            rates_score = 0
+        else:
+            rv = self.compute_relative_cb_score(currency, "USD")
+            # Negative means USD more hawkish → negative for this currency
+            rates_score = -rv["score"]  # flip: positive = good for currency
+
+        # Pillar 2: Growth momentum (proxy from regime state)
+        r = self.regime_model.regions.get(currency, {})
+        state = r.get("current_state")
+        if state is not None:
+            name = STATES[state]
+            # Growth is proxied by regime: REFLATION > HAWKISH > RESTRICTIVE > TRANSITION > ACCOM
+            growth_map = {
+                "REFLATION_OVERSHOOT": 2.0,
+                "HAWKISH_TIGHTENING": 1.0,
+                "RESTRICTIVE_HOLD": 0.0,
+                "TRANSITION_EASING": -1.0,
+                "ACCOMMODATIVE": -1.5,
+            }
+            growth_score = growth_map.get(name, 0)
+        else:
+            growth_score = 0
+
+        # Pillar 3: Terms of trade / commodity beta
+        commodity_score = self._COMMODITY_BETA.get(currency, 0)
+
+        # Pillar 4: Positioning proxy (from memory — count of recent interactions mentioning currency)
+        interactions = self.memory.get("interactions", [])
+        pos_mentions = 0
+        corrections_against = 0
+        currency_kws = [currency.lower()]
+        if currency == "GBP":
+            currency_kws.extend(["sterling", "cable"])
+        elif currency == "JPY":
+            currency_kws.extend(["yen"])
+        elif currency == "AUD":
+            currency_kws.extend(["aussie"])
+
+        for i in interactions[-50:]:
+            q = i.get("question", "").lower()
+            if any(k in q for k in currency_kws):
+                pos_mentions += 1
+                if i.get("feedback") == "bad":
+                    corrections_against += 1
+
+        # High engagement + corrections = crowded/wrong-way → slight negative
+        positioning_score = -0.5 if corrections_against >= 2 else 0
+
+        # Composite
+        total = (rates_score * 0.40) + (growth_score * 0.25) + (commodity_score * 0.20) + (positioning_score * 0.15)
+
+        pillar_scores = {
+            "rates_differential": round(rates_score, 2),
+            "growth_momentum": round(growth_score, 2),
+            "terms_of_trade": round(commodity_score, 2),
+            "positioning": round(positioning_score, 2),
+        }
+
+        # Narrative
+        if total > 0.5:
+            direction = f"Constructive on {currency}"
+        elif total < -0.5:
+            direction = f"Bearish on {currency}"
+        else:
+            direction = f"Neutral on {currency}"
+
+        narrative = (
+            f"**{currency}**: {direction} (score: {total:+.1f}). "
+            f"Rates: {rates_score:+.1f}, Growth: {growth_score:+.1f}, "
+            f"ToT: {commodity_score:+.1f}, Positioning: {positioning_score:+.1f}."
+        )
+
+        return {"total_score": round(total, 2), "pillar_scores": pillar_scores, "narrative": narrative}
+
+    def compute_pairwise_fx_signal(self, ccy_a: str, ccy_b: str) -> dict:
+        """Compute directional FX signal between two currencies.
+
+        Returns dict with: signal (positive = long A / short B), narrative.
+        """
+        fa = self.compute_fx_score(ccy_a)
+        fb = self.compute_fx_score(ccy_b)
+        signal = fa["total_score"] - fb["total_score"]
+
+        if abs(signal) < 0.3:
+            direction = "No strong directional bias"
+            trade = "Look for micro catalysts or RV within the pair"
+        elif signal > 0:
+            direction = f"Favour {ccy_a} over {ccy_b}"
+            trade = f"Long {ccy_a}/{ccy_b} or expressions that benefit from {ccy_a} outperformance"
+        else:
+            direction = f"Favour {ccy_b} over {ccy_a}"
+            trade = f"Long {ccy_b}/{ccy_a} or expressions that benefit from {ccy_b} outperformance"
+
+        narrative = (
+            f"**{ccy_a}/{ccy_b}**: {direction} (signal: {signal:+.1f}). "
+            f"{ccy_a}: {fa['total_score']:+.1f}, {ccy_b}: {fb['total_score']:+.1f}. "
+            f"Trade implication: {trade}."
+        )
+
+        return {"signal": round(signal, 2), "narrative": narrative,
+                "scores": {ccy_a: fa, ccy_b: fb}}
+
+    def get_regime_view(self, region: str) -> dict:
+        """Get explicit directional view for a CB region.
+
+        Returns: terminal_rate_bias, next_move, probability, hawkish_vs_market narrative.
+        """
+        from regime_model import STATES
+
+        r = self.regime_model.regions.get(region, {})
+        state = r.get("current_state")
+        if state is None:
+            return {"next_move": "unknown", "probability": 0, "narrative": f"No regime data for {region}."}
+
+        name = STATES[state]
+        conf = r.get("confidence", 0)
+        matrix = self.regime_model.get_transition_matrix(region)
+
+        # Determine most likely next move
+        transitions = [(j, matrix[state][j]) for j in range(len(STATES))
+                       if j != state and matrix[state][j] >= 0.05]
+        transitions.sort(key=lambda x: -x[1])
+
+        if not transitions:
+            return {"next_move": "hold", "probability": 1.0 - sum(matrix[state][j] for j in range(len(STATES)) if j != state),
+                    "narrative": f"{region} regime is stable in {name} ({conf:.0%})."}
+
+        top_next = transitions[0]
+        next_name = STATES[top_next[0]]
+        next_prob = top_next[1]
+
+        # Determine if next move is hawkish or dovish
+        hawk_current = self._STATE_HAWKISHNESS.get(name, 2)
+        hawk_next = self._STATE_HAWKISHNESS.get(next_name, 2)
+
+        if hawk_next > hawk_current:
+            next_move = "hike/hawkish"
+            terminal_bias = "higher than market"
+        elif hawk_next < hawk_current:
+            next_move = "cut/dovish"
+            terminal_bias = "lower than market"
+        else:
+            next_move = "hold"
+            terminal_bias = "in line with market"
+
+        # Hold probability
+        hold_prob = matrix[state][state]
+
+        # Scenario weighting
+        base_case = f"{name} holds" if hold_prob > next_prob else f"transition to {next_name}"
+        base_prob = max(hold_prob, next_prob)
+        tail_case = f"{next_name}" if hold_prob > next_prob else f"{name} persists"
+        tail_prob = min(hold_prob, next_prob)
+
+        narrative = (
+            f"**{region}**: Currently in {name} ({conf:.0%} confidence). "
+            f"Next move: **{next_move}** ({next_prob:.0%} probability). "
+            f"Hold probability: {hold_prob:.0%}. "
+            f"Base case ({base_prob:.0%}): {base_case}. "
+            f"Tail risk ({tail_prob:.0%}): {tail_case}. "
+            f"Terminal rate bias: {terminal_bias}."
+        )
+
+        return {
+            "next_move": next_move,
+            "probability": round(next_prob, 2),
+            "hold_probability": round(hold_prob, 2),
+            "terminal_bias": terminal_bias,
+            "base_case": base_case,
+            "base_prob": round(base_prob, 2),
+            "tail_case": tail_case,
+            "tail_prob": round(tail_prob, 2),
+            "narrative": narrative,
+        }
+
+    def rank_g10_currencies(self) -> list:
+        """Rank G10 currencies by FX score. Returns sorted list of (currency, score_dict)."""
+        g10 = ["USD", "EUR", "GBP", "JPY", "AUD", "CAD", "CHF"]
+        scored = []
+        for ccy in g10:
+            fx = self.compute_fx_score(ccy)
+            scored.append((ccy, fx))
+        scored.sort(key=lambda x: -x[1]["total_score"])
+        return scored
+
+    # =====================================================================
+    # FILLER LANGUAGE ENFORCEMENT
+    # =====================================================================
+
+    _WEAK_PHRASES = [
+        (r'\bwatch for\b', 'base case: '),
+        (r'\bmonitor\b', 'track'),
+        (r'\blook for\b', 'expect'),
+        (r'\bcould\b', 'likely will'),
+        (r'\bmay\b(?!\s+\d)', 'should'),
+        (r'\bit is worth noting\b', ''),
+        (r'\bit should be noted\b', ''),
+        (r'\bneedless to say\b', ''),
+        (r'\bas we know\b', ''),
+        (r'\bgenerally speaking\b', ''),
+        (r'\bbroadly speaking\b', ''),
+        (r'\bat a high level\b', ''),
+        (r'\bin the current environment\b', 'right now'),
+        (r'\bgoing forward\b', 'over the next 1-3M'),
+    ]
+
+    def _strip_filler(self, text: str) -> str:
+        """Replace weak/hedging language with directional statements."""
+        for pattern, replacement in self._WEAK_PHRASES:
+            text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
+        # Clean up double spaces from removals
+        text = re.sub(r'  +', ' ', text)
+        return text
+
     def _save_memory(self):
         if len(self.memory["interactions"]) > 500:
             self.memory["interactions"] = self.memory["interactions"][-500:]
@@ -1283,6 +1615,9 @@ class MacroLLM:
         result = self._apply_learned_constraints(result, question=question,
                                                   context=context_str)
 
+        # ---- Final filler strip ----
+        result = self._strip_filler(result)
+
         return result
 
     # =====================================================================
@@ -1372,48 +1707,83 @@ class MacroLLM:
         """User wants to understand WHY something is the way it is.
 
         Structured output:
-        1. Direct answer / concept
-        2. What the briefing says
-        3. Mechanism / reasoning
-        4. Trade / market implication
-        5. (optional) PnL / positioning per preferences
+        1. User research (knowledge docs) — prioritized
+        2. Direct answer / concept
+        3. What the briefing says
+        4. Regime view with explicit directional call
+        5. Mechanism / trade implication
+        6. PnL / positioning per preferences
         """
         if pref is None:
             pref = self._build_preference_weights()
         lines = []
 
-        # --- 1. Concept explanation (direct answer) ---
+        # --- 1. User research first (uploaded docs take priority) ---
+        knowledge_docs = self._load_knowledge_docs()
+        relevant_docs = self._find_relevant_knowledge(knowledge_docs, question)
+        if relevant_docs:
+            lines.append("**From your research:**")
+            for doc in relevant_docs[:2]:
+                doc_claims = self._extract_key_claims(doc["summary"])
+                lines.append(f"_{doc['title']}:_")
+                for c in doc_claims[:3]:
+                    lines.append(f"- {c}")
+            # Compare to briefing
+            relevant = self._find_relevant_section(briefing, question, section_ctx)
+            if relevant:
+                briefing_claims = self._extract_key_claims(relevant)
+                if briefing_claims:
+                    lines.append("\n**Current briefing data:**")
+                    for c in briefing_claims[:3]:
+                        lines.append(f"- {c}")
+                    lines.append("_Compare your research above with today's data to assess if the thesis still holds._")
+
+        # --- 2. Concept explanation (direct answer) ---
         explanation = self._find_macro_explanation(question)
         if explanation:
-            lines.append(explanation)
+            lines.append(("\n" if lines else "") + explanation)
 
-        # --- 2. What the briefing says ---
-        relevant = self._find_relevant_section(briefing, question, section_ctx)
-        briefing_claims = []
-        if relevant and len(relevant) > 50:
-            claims = self._extract_key_claims(relevant)
-            q_words = self._meaningful_words(question)
-            briefing_claims = [c for c in claims
-                               if len(q_words & self._meaningful_words(c)) >= 2]
-            if briefing_claims:
-                lines.append("\n**What the briefing says:**")
-                for c in briefing_claims[:5]:
-                    lines.append(f"- {c}")
+        # --- 3. What the briefing says (if not already shown) ---
+        if not relevant_docs:
+            relevant = self._find_relevant_section(briefing, question, section_ctx)
+            if relevant and len(relevant) > 50:
+                claims = self._extract_key_claims(relevant)
+                q_words = self._meaningful_words(question)
+                briefing_claims = [c for c in claims
+                                   if len(q_words & self._meaningful_words(c)) >= 2]
+                if briefing_claims:
+                    lines.append("\n**What the briefing says:**")
+                    for c in briefing_claims[:5]:
+                        lines.append(f"- {c}")
 
-        # --- 3. Mechanism / reasoning (if no canned explanation) ---
-        if not explanation:
+        # --- 4. Regime view — ALWAYS take a view ---
+        q_lower = question.lower()
+        regions_mentioned = []
+        from regime_model import _REGION_KEYWORDS
+        for region, kws in _REGION_KEYWORDS.items():
+            if any(kw in q_lower for kw in kws):
+                regions_mentioned.append(region)
+        if not regions_mentioned:
+            regions_mentioned = ["USD"]
+
+        for region in regions_mentioned[:2]:
+            view = self.get_regime_view(region)
+            if view.get("next_move") != "unknown":
+                lines.append(f"\n{view['narrative']}")
+
+        # --- 5. Mechanism / reasoning (if no canned explanation) ---
+        if not explanation and not relevant_docs:
             reasoned = self._reason_about_question(question, section_ctx, briefing)
             if reasoned:
                 lines.insert(0, reasoned)
 
-        # --- 4. Market implication / intuition ---
+        # Market implication / intuition
         if lines:
             intuition = self._add_structural_intuition(question)
             if intuition:
-                lines.append("\n**Mechanism:**")
                 lines.append(intuition)
 
-        # --- 5. Preference-driven sections ---
+        # --- 6. Preference-driven sections ---
         response_so_far = "\n".join(lines).lower()
         self._inject_preference_sections(lines, pref, response_so_far,
                                           section_ctx, briefing, question)
@@ -1421,7 +1791,7 @@ class MacroLLM:
         if not lines:
             lines.append(self._honest_fallback(question))
 
-        return "\n".join(lines)
+        return self._strip_filler("\n".join(lines))
 
     def _respond_scenario(self, question, section_ctx, briefing,
                            pref: dict = None):
@@ -1458,21 +1828,11 @@ class MacroLLM:
         if not scenario_regions:
             scenario_regions = {"USD"}
 
-        # --- 3. Regime transition probabilities (mechanism) ---
-        lines.append("\n**Regime model — current state & transitions:**")
+        # --- 3. Regime view with probability-weighted scenarios ---
         for region in sorted(scenario_regions):
-            r = self.regime_model.regions.get(region, {})
-            state = r.get("current_state")
-            if state is None:
-                continue
-            conf = r.get("confidence", 0)
-            lines.append(f"- {region}: {STATES[state]} ({conf:.0%} confidence)")
-            matrix = self.regime_model.get_transition_matrix(region)
-            transitions = [(j, matrix[state][j]) for j in range(len(STATES))
-                           if j != state and matrix[state][j] >= 0.05]
-            transitions.sort(key=lambda x: -x[1])
-            for j, prob in transitions[:3]:
-                lines.append(f"  → {STATES[j]}: {prob:.0%}")
+            view = self.get_regime_view(region)
+            if view.get("next_move") != "unknown":
+                lines.append(f"\n{view['narrative']}")
 
         # --- 4. Market implications ---
         lines.append("\n**If this scenario plays out:**")
@@ -1515,10 +1875,12 @@ class MacroLLM:
         self._inject_preference_sections(lines, pref, response_so_far,
                                           section_ctx, briefing, question)
 
-        lines.append("\n**Positioning consideration:** If the scenario is consensus, "
-                     "the move may already be priced — check CFTC and dealer inventory first.")
+        lines.append("\n**Positioning risk:** If this scenario is consensus, the move is likely "
+                     "already partially priced. CFTC data and dealer positioning determine "
+                     "the remaining PnL — a crowded consensus trade has limited upside and "
+                     "large unwind risk.")
 
-        return "\n".join(lines)
+        return self._strip_filler("\n".join(lines))
 
     def _respond_trade_idea(self, question, section_ctx, briefing,
                              pref: dict = None):
@@ -1605,39 +1967,93 @@ class MacroLLM:
             lines.append("- Define what makes the trade wrong BEFORE entry")
             lines.append("- Horizon matters: 1W tactical vs 3M structural use different structures")
 
-        # --- 4. Entry / risk framework ---
-        lines.append("\n**Entry logic & risk:**")
-        lines.append("- Entry: technical level (z-score), event catalyst, or carry breakeven")
-        lines.append("- Sizing: based on DV01 risk budget, not notional")
-        lines.append("- Stop: pre-defined in bp or DV01 terms — not 'revisit later'")
+        # --- 4. PnL-driven framework (mandatory) ---
+        lines.append("\n**PnL drivers:**")
+        lines.append("- What makes money: identify the specific variable that must move and by how much")
+        lines.append("- Carry component: 3M carry+roll in bp/day — positive carry preferred")
+        lines.append("- P&L scenarios: base case (+X bp), bull case (+Y bp), bear case (-Z bp)")
 
-        # --- 5. Preference-driven sections ---
+        lines.append("\n**Why this instrument:**")
+        lines.append("- Specific instrument chosen because it gives cleanest exposure to the driver")
+        lines.append("- Alternative structures considered and rejected (carry cost, gamma, liquidity)")
+
+        lines.append("\n**Invalidation:**")
+        lines.append("- Trade is wrong if: [specific condition] — stop in DV01 terms")
+        lines.append("- Sizing: DV01 risk budget, not notional")
+
+        # --- 5. Regime probability weighting ---
+        from regime_model import _REGION_KEYWORDS
+        q_lower = question.lower()
+        for region, kws in _REGION_KEYWORDS.items():
+            if any(kw in q_lower for kw in kws):
+                view = self.get_regime_view(region)
+                if view.get("next_move") != "unknown":
+                    lines.append(f"\n**Regime context:** {view['narrative']}")
+                break
+
+        # --- 6. Preference-driven sections ---
         response_so_far = "\n".join(lines).lower()
         self._inject_preference_sections(lines, pref, response_so_far,
                                           section_ctx, briefing, question)
 
-        return "\n".join(lines)
+        return self._strip_filler("\n".join(lines))
 
     def _respond_compare(self, question, section_ctx, briefing,
                           pref: dict = None):
-        """User wants to compare two things.
+        """User wants to compare — use relative CB scoring and FX model.
 
         Structured output:
-        1. Direct answer: which is preferred and why
-        2. What the briefing says
-        3. Comparison framework (mechanism)
-        4. Trade implication
-        5. (optional) PnL / positioning per preferences
+        1. Pairwise RV signal (if currencies/CBs)
+        2. Briefing evidence
+        3. 4-pillar decomposition
+        4. Trade implication with PnL framing
         """
         if pref is None:
             pref = self._build_preference_weights()
-        lines = ["**Comparison:**"]
+        lines = []
 
         instruments = self.extract_instruments(question)
-        if instruments:
-            lines.append(f"Instruments identified: {', '.join(instruments)}")
 
-        # --- 2. Briefing evidence ---
+        # Detect currency pairs for RV comparison
+        q_upper = question.upper()
+        currencies_found = re.findall(r'\b(USD|EUR|GBP|JPY|AUD|CHF|CAD|NZD|NOK|SEK)\b', q_upper)
+        currencies_found = list(dict.fromkeys(currencies_found))  # dedupe, preserve order
+
+        if len(currencies_found) >= 2:
+            # --- Pairwise RV analysis ---
+            ccy_a, ccy_b = currencies_found[0], currencies_found[1]
+
+            # CB relative score
+            rv = self.compute_relative_cb_score(ccy_a, ccy_b)
+            lines.append(rv["narrative"])
+
+            # FX pairwise signal
+            fx_sig = self.compute_pairwise_fx_signal(ccy_a, ccy_b)
+            lines.append(f"\n{fx_sig['narrative']}")
+
+            # Decomposition
+            lines.append(f"\n**4-pillar breakdown:**")
+            for ccy in [ccy_a, ccy_b]:
+                fx = self.compute_fx_score(ccy)
+                p = fx["pillar_scores"]
+                lines.append(f"- {ccy}: rates={p['rates_differential']:+.1f}, "
+                             f"growth={p['growth_momentum']:+.1f}, "
+                             f"ToT={p['terms_of_trade']:+.1f}, "
+                             f"positioning={p['positioning']:+.1f} → total={fx['total_score']:+.1f}")
+
+            # Basis signal if relevant
+            if ccy_a != "USD" and ccy_b != "USD":
+                basis_a = self.regime_model.compute_basis_signal(ccy_a, "USD")
+                basis_b = self.regime_model.compute_basis_signal(ccy_b, "USD")
+                lines.append(f"\n**Basis context:**")
+                lines.append(f"- {ccy_a}/USD basis: {basis_a.get('direction', 'unknown')}")
+                lines.append(f"- {ccy_b}/USD basis: {basis_b.get('direction', 'unknown')}")
+        else:
+            lines.append("**Comparison:**")
+            if instruments:
+                lines.append(f"Instruments identified: {', '.join(instruments)}")
+
+        # --- Briefing evidence ---
         relevant = self._find_relevant_section(briefing, question, section_ctx)
         if relevant:
             claims = self._extract_key_claims(relevant)
@@ -1646,40 +2062,45 @@ class MacroLLM:
                 for c in claims[:4]:
                     lines.append(f"- {c}")
 
-        # --- 3. Comparison framework (mechanism) ---
-        lines.append("\n**Comparison framework:**")
+        # --- PnL-driven comparison ---
+        lines.append("\n**PnL comparison framework:**")
         lines.append("- Relative carry+roll over 3M horizon (bp/day after transaction costs)")
-        lines.append("- Historical z-score of the spread — how stretched is the current relationship?")
-        lines.append("- Macro sensitivity: which instrument is more exposed to the catalyst you're trading?")
-        lines.append("- Convexity profile: how does each instrument behave as rates move ±50bp?")
-        lines.append("- Liquidity: bid/ask spread and depth matter at your typical trade size")
+        lines.append("- Historical z-score of the spread — mean-reversion vs momentum")
+        lines.append("- Macro sensitivity: which instrument gives cleanest PnL exposure to the catalyst?")
+        lines.append("- Convexity: asymmetric payoff profiles matter for sizing")
 
-        # --- 4. Trade implication ---
-        lines.append("\n**Trade implication:**")
-        lines.append("- Prefer the instrument with better carry+roll unless there's a strong catalyst view")
-        lines.append("- If the z-score is >2σ stretched, fading the relationship is preferred to chasing")
-
-        # --- 5. Preference-driven sections ---
+        # --- Preference-driven sections ---
         response_so_far = "\n".join(lines).lower()
         self._inject_preference_sections(lines, pref, response_so_far,
                                           section_ctx, briefing, question)
 
-        return "\n".join(lines)
+        return self._strip_filler("\n".join(lines))
 
     def _respond_discuss(self, question, section_ctx, briefing,
                           pref: dict = None):
-        """General discussion — ground everything in the briefing.
+        """General discussion — regime-driven, directional, PnL-anchored.
 
         Structured output:
-        1. Direct answer
-        2. What the briefing says
-        3. Mechanism / reasoning
-        4. Market / trade implication
-        5. (optional) PnL / positioning per preferences
+        1. User research (if relevant)
+        2. Briefing data
+        3. Regime view with explicit call
+        4. Mechanism / reasoning
+        5. Trade implication
+        6. PnL / positioning per preferences
         """
         if pref is None:
             pref = self._build_preference_weights()
         lines = []
+
+        # --- 1. User research first ---
+        knowledge_docs = self._load_knowledge_docs()
+        relevant_docs = self._find_relevant_knowledge(knowledge_docs, question)
+        if relevant_docs:
+            lines.append("**From your research:**")
+            for doc in relevant_docs[:2]:
+                doc_claims = self._extract_key_claims(doc["summary"])
+                if doc_claims:
+                    lines.append(f"_{doc['title']}:_ {'; '.join(doc_claims[:2])}")
 
         # --- 2. What the briefing says ---
         relevant = self._find_relevant_section(briefing, question, section_ctx)
@@ -1690,28 +2111,50 @@ class MacroLLM:
             briefing_claims = [c for c in claims
                                if len(q_words & self._meaningful_words(c)) >= 2]
             if briefing_claims:
-                lines.append("**From the briefing:**")
+                lines.append("\n**From the briefing:**")
                 for c in briefing_claims[:5]:
                     lines.append(f"- {c}")
-                lines.append("")
 
-        # --- 3. Mechanism ---
+        # --- 3. Regime view — always take a directional view ---
+        q_lower = question.lower()
+        from regime_model import _REGION_KEYWORDS
+        regions_mentioned = []
+        for region, kws in _REGION_KEYWORDS.items():
+            if any(kw in q_lower for kw in kws):
+                regions_mentioned.append(region)
+        if not regions_mentioned:
+            regions_mentioned = ["USD"]
+
+        for region in regions_mentioned[:2]:
+            view = self.get_regime_view(region)
+            if view.get("next_move") != "unknown":
+                lines.append(f"\n{view['narrative']}")
+
+        # FX signal if question mentions currency pairs
+        fx_pairs = re.findall(r'(EUR|GBP|JPY|AUD|CHF|CAD)(?:/?(USD))?', question.upper())
+        for match in fx_pairs[:2]:
+            ccy = match[0]
+            if ccy != "USD":
+                fx_sig = self.compute_pairwise_fx_signal(ccy, "USD")
+                lines.append(f"\n{fx_sig['narrative']}")
+
+        # --- 4. Mechanism ---
         explanation = self._find_macro_explanation(question)
         if explanation:
-            lines.append(explanation)
+            lines.append(("\n" if lines else "") + explanation)
 
         if not lines:
             reasoned = self._reason_about_question(question, section_ctx, briefing)
             if reasoned:
                 lines.append(reasoned)
 
-        # --- 4. Structural intuition / trade implication ---
+        # --- 5. Structural intuition / trade implication ---
         if lines:
             intuition = self._add_structural_intuition(question)
             if intuition:
                 lines.append(intuition)
 
-        # --- 5. Preference-driven sections ---
+        # --- 6. Preference-driven sections ---
         response_so_far = "\n".join(lines).lower()
         self._inject_preference_sections(lines, pref, response_so_far,
                                           section_ctx, briefing, question)
@@ -1719,7 +2162,7 @@ class MacroLLM:
         if not lines:
             lines.append(self._honest_fallback(question))
 
-        return "\n".join(lines)
+        return self._strip_filler("\n".join(lines))
 
     # =====================================================================
     # REASONING HELPERS
@@ -2339,7 +2782,7 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
             for c in fred_claims[:12]:
                 lines.append(f"- {c}")
 
-        return "\n".join(lines)
+        return self._strip_filler("\n".join(lines))
 
     def _briefing_central_bank_watch(self, summaries: str) -> str:
         """## Central Bank Watch — Fed, ECB, BOE, BOJ with analytical framing."""
@@ -2350,8 +2793,8 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
         cb_analysis = {
             "HAWKISH_TIGHTENING": (
                 "actively tightening. Policy rate trajectory is upward — front-end bears, "
-                "curve flattens. The question is how much further — watch for any softening "
-                "in guidance that signals the terminal rate is approaching."
+                "curve flattens. Terminal rate is approaching — any softening "
+                "in guidance signals the pivot is near."
             ),
             "RESTRICTIVE_HOLD": (
                 "holding at restrictive levels. Front-end is anchored by the hold, but "
@@ -2398,27 +2841,20 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
             state = r.get("current_state")
             if state is not None:
                 state_name = STATES[state]
-                conf = r.get("confidence", 0)
                 analysis = cb_analysis.get(state_name, f"in {state_name}.")
-
-                # Transition context
-                matrix = self.regime_model.get_transition_matrix(region)
-                transitions = [(j, matrix[state][j]) for j in range(len(STATES))
-                               if j != state and matrix[state][j] >= 0.08]
-                transitions.sort(key=lambda x: -x[1])
-
                 lines.append(f"The {cb_name} is {analysis}")
 
-                if transitions:
-                    top_t = transitions[0]
-                    next_name = STATES[top_t[0]]
-                    lines.append(
-                        f"Most probable transition: → **{next_name}** ({top_t[1]:.0%}). "
-                        f"{'This would be bullish front-end, curve steepener.' if top_t[0] > state else 'This would be bearish front-end, curve flattener.' if top_t[0] < state else ''}"
-                    )
-                    if len(transitions) > 1:
-                        alt = transitions[1]
-                        lines.append(f"Alternative: → {STATES[alt[0]]} ({alt[1]:.0%}).")
+                # Explicit directional view (mandatory)
+                view = self.get_regime_view(region)
+                lines.append(
+                    f"**Next move: {view['next_move']}** ({view['probability']:.0%} probability). "
+                    f"Hold probability: {view['hold_probability']:.0%}. "
+                    f"Terminal rate bias: {view['terminal_bias']}."
+                )
+                lines.append(
+                    f"Base case ({view['base_prob']:.0%}): {view['base_case']}. "
+                    f"Tail risk ({view['tail_prob']:.0%}): {view['tail_case']}."
+                )
 
             # Data-driven claims
             if claims:
@@ -2441,7 +2877,36 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
             lines.append("\n**Balance Sheet / QT:** Check Bloomberg for reserve levels and QT run-rate. "
                          "Net liquidity impact drives xccy basis — faster QT = wider basis.")
 
-        return "\n".join(lines)
+        # Relative CB hawkishness ranking
+        lines.append("\n**Relative Hawkishness Ranking:**")
+        cb_scores = []
+        for cb_name, region, _ in cb_configs:
+            view = self.get_regime_view(region)
+            hawk = self._STATE_HAWKISHNESS.get(
+                self.regime_model.regions.get(region, {}).get("current_state", 2), 2
+            )
+            # Use the state name if available
+            from regime_model import STATES as ST
+            state_idx = self.regime_model.regions.get(region, {}).get("current_state")
+            state_name = ST[state_idx] if state_idx is not None else "Unknown"
+            hawk_val = self._STATE_HAWKISHNESS.get(state_name, 2)
+            cb_scores.append((hawk_val, cb_name, region, view))
+        cb_scores.sort(key=lambda x: -x[0])
+        for i, (_, cb_name, region, view) in enumerate(cb_scores, 1):
+            lines.append(f"{i}. **{cb_name}** — {view.get('next_move', 'unknown')} "
+                         f"({view.get('probability', 0):.0%}), "
+                         f"terminal bias: {view.get('terminal_bias', 'unknown')}")
+
+        # Pairwise RV
+        rv_eur = self.compute_relative_cb_score("USD", "EUR")
+        rv_gbp = self.compute_relative_cb_score("USD", "GBP")
+        rv_jpy = self.compute_relative_cb_score("USD", "JPY")
+        lines.append("\n**Pairwise RV:**")
+        lines.append(f"- {rv_eur['narrative']}")
+        lines.append(f"- {rv_gbp['narrative']}")
+        lines.append(f"- {rv_jpy['narrative']}")
+
+        return self._strip_filler("\n".join(lines))
 
     def _briefing_rates_market(self, summaries: str, pref: dict) -> str:
         """## Rates Market Assessment with 4 subsections + analytical framing."""
@@ -2453,6 +2918,11 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
         usd_state = usd_r.get("current_state")
         usd_name = STATES[usd_state] if usd_state is not None else "Unknown"
 
+        # Explicit Fed view at the top
+        usd_view = self.get_regime_view("USD")
+        if usd_view.get("next_move") != "unknown":
+            lines.append(f"\n{usd_view['narrative']}")
+
         # --- Subsection 1: Yield Curve & Term Premium ---
         lines.append("\n### Yield Curve & Term Premium")
 
@@ -2462,8 +2932,8 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
                 lines.append(
                     f"With the Fed in {usd_name}, the curve is under flattening pressure. "
                     "Front-end anchored by restrictive rates, long-end driven by term premium "
-                    "and supply dynamics. Watch for any data miss that could trigger pivot "
-                    "expectations and a steepening impulse."
+                    "and supply dynamics. A data miss triggers pivot expectations "
+                    "and a steepening impulse."
                 )
             elif "TRANSITION" in usd_name:
                 lines.append(
@@ -2596,7 +3066,7 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
         else:
             lines.append("- Check Bloomberg for 10Y and 30Y swap spreads and invoice spread levels.")
 
-        return "\n".join(lines)
+        return self._strip_filler("\n".join(lines))
 
     def _briefing_fx_market(self, summaries: str, pref: dict) -> str:
         """## FX Market Assessment with 3 subsections + analytical framing."""
@@ -2608,8 +3078,25 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
         # --- Subsection 1: G10 Spot & Positioning ---
         lines.append("\n### G10 Spot & Positioning")
 
-        # Analytical FX view from regime divergence
-        lines.append(views.get("fx_view", ""))
+        # G10 currency ranking from 4-pillar model
+        ranking = self.rank_g10_currencies()
+        if ranking:
+            lines.append("\n**G10 FX Ranking (4-pillar model):**")
+            for i, (ccy, fx) in enumerate(ranking, 1):
+                p = fx["pillar_scores"]
+                lines.append(
+                    f"{i}. **{ccy}** ({fx['total_score']:+.1f}): "
+                    f"rates={p['rates_differential']:+.1f}, growth={p['growth_momentum']:+.1f}, "
+                    f"ToT={p['terms_of_trade']:+.1f}"
+                )
+
+        # Pairwise signals for key pairs
+        key_pairs = [("EUR", "USD"), ("GBP", "USD"), ("USD", "JPY"), ("AUD", "USD")]
+        lines.append("\n**Pairwise signals:**")
+        for ccy_a, ccy_b in key_pairs:
+            sig = self.compute_pairwise_fx_signal(ccy_a, ccy_b)
+            direction = "LONG" if sig["signal"] > 0.3 else "SHORT" if sig["signal"] < -0.3 else "NEUTRAL"
+            lines.append(f"- {ccy_a}/{ccy_b}: **{direction}** (signal: {sig['signal']:+.1f})")
 
         spot_kws = ["dxy", "eur/usd", "gbp/usd", "usd/jpy", "aud/usd",
                     "usd/chf", "usd/cad", "dollar", "cable", "euro",
@@ -2703,7 +3190,7 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
             for c in carry_claims[:3]:
                 lines.append(f"- {c}")
 
-        return "\n".join(lines)
+        return self._strip_filler("\n".join(lines))
 
     def _briefing_xccy_basis(self, summaries: str, pref: dict) -> str:
         """## Cross-Currency Basis — analytical, per-pair assessment."""
@@ -2759,7 +3246,7 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
                             f"{foreign} ({f_s}) is tighter than USD ({usd_s}). "
                             f"This should tighten the basis — less USD funding premium as "
                             f"rate differential narrows. Watch for Yankee issuance flows "
-                            f"({foreign} corporates borrowing in USD) which could offset."
+                            f"({foreign} corporates borrowing in USD) which offsets partially."
                         )
                 else:
                     lines.append(
@@ -2809,7 +3296,7 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
                 f"{'Consider pay-basis at 2Y and/or 10Y.' if d == 'widen' else 'Consider receive-basis at 2Y and/or 10Y.' if d == 'tighten' else 'Monitor for entry.'}"
             )
 
-        return "\n".join(lines)
+        return self._strip_filler("\n".join(lines))
 
     def _briefing_systematic_signals(self, summaries: str, pref: dict) -> str:
         """## Systematic Signal Context — APM z-score logic synthesis."""
@@ -2893,7 +3380,7 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
         lines.append("- Check PCA residuals on Reds/Greens/Blues for mean-reversion setups.")
         lines.append("- Check swap curve z-scores (2s5s10s fly, 5s10s30s fly) for entry points.")
 
-        return "\n".join(lines)
+        return self._strip_filler("\n".join(lines))
 
     def _briefing_key_events(self, summaries: str) -> str:
         """## Key Events Ahead — data, CB speakers, auctions, meetings."""
@@ -2963,7 +3450,7 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
         if len(lines) == 1:
             lines.append("\n_No specific upcoming events identified in today's data — check Bloomberg calendar._")
 
-        return "\n".join(lines)
+        return self._strip_filler("\n".join(lines))
 
     def _briefing_trade_construction(self, summaries: str, pref: dict,
                                       feedback_entries: list,
@@ -3031,7 +3518,7 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
             for fb in good_fb[-3:]:
                 lines.append(f"- {fb.get('trade', '')[:150]}")
 
-        return "\n".join(lines)
+        return self._strip_filler("\n".join(lines))
 
     # ── Trade idea generators (used by _briefing_trade_construction) ─────
 
@@ -3062,9 +3549,12 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
                 f"(bear steepener hedge). Net: long front-end rally.\n"
                 f"- Rationale: {region} transitioning from {current} → {next_state} "
                 f"({probability:.0%} probability per regime model). {evidence_str}\n"
+                f"- PnL drivers: front-end rally on pivot pricing; 25bp of cuts = ~12bp DV01 gain on 2Y\n"
+                f"- Why this instrument: 2Y swap gives cleanest exposure to near-term rate expectations; "
+                f"10Y hedge isolates front-end from term premium noise\n"
                 f"- Carry: receive-fixed front-end carries positively in restrictive hold regime\n"
                 f"- Entry: on any hawkish repricing of front-end that offers better carry\n"
-                f"- Risk: inflation re-acceleration delays pivot; size conservatively"
+                f"- Invalidation: inflation re-accelerates above target; front-end reprices >50bp higher"
             )
         elif "TRANSITION" in current and "ACCOMMODATIVE" in next_state:
             return (
@@ -3073,9 +3563,14 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
                 f"- Rationale: {region} entering {next_state} from {current} "
                 f"({probability:.0%} probability). Bull steepener historically outperforms "
                 f"in early easing cycles as front-end leads. {evidence_str}\n"
+                f"- PnL drivers: 2s10s steepening — front-end rallies faster than long-end; "
+                f"each 10bp of 2s10s = ~$1k per $1M DV01 notional\n"
+                f"- Why this instrument: DV01-neutral steepener isolates curve shape from "
+                f"directional rate risk; swaps more liquid than cash for curve trades\n"
                 f"- Carry: check 3M carry+roll — steep forwards generate positive roll\n"
                 f"- Entry: on short-term flattening that offers better carry\n"
-                f"- Risk: term premium spike (fiscal/supply) offsets front-end rally"
+                f"- Invalidation: term premium spike (fiscal/supply) offsets front-end rally; "
+                f"2s10s flattens >25bp from entry"
             )
         elif "HAWKISH" in current and "RESTRICTIVE" in next_state:
             return (
@@ -3085,9 +3580,13 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
                 f"- Rationale: As {region} moves {current} → {next_state} "
                 f"({probability:.0%} probability), front-end anchors while belly stays cheap "
                 f"(terminal rate uncertainty). {evidence_str}\n"
+                f"- PnL drivers: belly cheapening relative to wings; 5Y underperforms as "
+                f"terminal rate uncertainty persists. ~5bp fly move = meaningful PnL\n"
+                f"- Why this instrument: fly isolates curvature from directional and slope risk; "
+                f"DV01-neutral construction means low carry cost\n"
                 f"- Carry: typically positive if curve is inverted at entry\n"
                 f"- Entry: when 5Y is >1σ cheap to fitted curve\n"
-                f"- Risk: surprise cut accelerates belly richening"
+                f"- Invalidation: surprise cut accelerates belly richening; fly richens >10bp from entry"
             )
         elif "ACCOMMODATIVE" in current and "REFLATION" in next_state:
             return (
@@ -3097,18 +3596,27 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
                 f"- Rationale: {region} transitioning {current} → {next_state} "
                 f"({probability:.0%} probability). Reflation → term premium rises, "
                 f"long-end sells off more than front-end. {evidence_str}\n"
+                f"- PnL drivers: term premium repricing higher; each 10bp of 5s30s steepening "
+                f"generates ~$1.5k per $1M DV01. Forward-starting adds gamma\n"
+                f"- Why this instrument: forward payer gives asymmetric exposure — limited "
+                f"downside (premium paid), unlimited upside if rates sell off\n"
                 f"- Carry: payers carry negatively — size for catalyst, not carry\n"
                 f"- Entry: when forward steepener is at historical z-score lows\n"
-                f"- Risk: growth disappointment kills reflation thesis"
+                f"- Invalidation: growth disappointment kills reflation thesis; "
+                f"5s30s flattens >15bp from entry"
             )
         else:
             return (
                 f"**{region} Regime Hold — Curve RV**\n"
-                f"- Structure: Monitor current regime stability in {current}. "
-                f"No dominant transition trade — focus on RV within current regime.\n"
-                f"- Evidence: {evidence_str}\n"
-                f"- Suggestion: carry-positive structures that benefit from regime persistence "
-                f"(e.g. receive-fixed in the richest sector on the curve)"
+                f"- Structure: Carry-positive structures that benefit from regime persistence "
+                f"(e.g. receive-fixed in the richest sector on the curve)\n"
+                f"- Rationale: {current} regime is stable — no dominant transition trade. "
+                f"Focus on RV within current regime. {evidence_str}\n"
+                f"- PnL drivers: carry + roll-down in a stable regime; "
+                f"RV mean-reversion on PCA-cheap sectors\n"
+                f"- Why this instrument: receive-fixed in the richest sector gives best carry/risk; "
+                f"PCA residuals identify where to enter\n"
+                f"- Invalidation: regime breaks — transition probability rises above 30%"
             )
 
     def _generate_basis_trade(self, summaries: str, pref: dict) -> str:
@@ -3142,9 +3650,14 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
             f"**{foreign}/USD Basis Trade — {direction.upper()}**\n"
             f"- Structure: {side} at 2Y and/or 10Y tenor\n"
             f"- Rationale: {explanation}. {evidence_str}\n"
+            f"- PnL drivers: basis {direction}s from regime divergence; each 1bp of basis = "
+            f"~$1k per $100M notional. Key variable: USD funding premium\n"
+            f"- Why this instrument: xccy basis gives direct exposure to CB divergence; "
+            f"2Y driven by balance sheet, 10Y by curve slope and rate vol\n"
             f"- Carry: pay-basis carries negatively — size to mark-to-market budget, not yield\n"
             f"- Entry: check composite z-score; enter when >1.5σ from 3M mean\n"
-            f"- Risk: quarter-end / year-end seasonal distortion; CB swap-line activation"
+            f"- Invalidation: quarter-end / year-end seasonal distortion; CB swap-line activation; "
+            f"basis reverts >5bp against entry direction"
         )
 
     def _generate_vol_trade(self, summaries: str, pref: dict) -> str:

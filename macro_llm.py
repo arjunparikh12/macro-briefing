@@ -415,6 +415,18 @@ class MacroLLM:
                 "bad_answer": last["answer"],
                 "section": last.get("section", ""),
             })
+            # Also record an explicit AVOID rule so _apply_learned_constraints
+            # and _get_relevant_learned_rules surface this signal. Without
+            # this, a thumbs-down on a chat answer ONLY affected the regime
+            # model — the actual response patterns never got nudged.
+            if last.get("question") and last.get("answer"):
+                self.memory.setdefault("learned_rules", []).append({
+                    "timestamp": last["timestamp"],
+                    "rule": (f"AVOID this pattern — Q: {last['question'][:200]} "
+                             f"prior answer rated bad; do not repeat verbatim."),
+                    "source": "conversation_correction",
+                    "section": last.get("section", ""),
+                })
         if feedback == "good" and last.get("question"):
             self.memory["learned_rules"].append({
                 "timestamp": last["timestamp"],
@@ -441,16 +453,27 @@ class MacroLLM:
         return mapping.get(regime_label, "")
 
     def _extract_learned_rules(self, user_message: str, context: dict):
+        """Extract teaching/correction signals from a user message.
+
+        IMPORTANT: marker list is restricted to UNAMBIGUOUS teaching markers.
+        Phrases like "the fed is", "ecb is", "the curve is", "rates are"
+        are normal in macro questions ("what is the fed doing?", "where are
+        rates today?") and should NOT register as corrections. The previous
+        list polluted learned_rules with conversational noise, which then
+        diluted real corrections in _apply_learned_constraints.
+        """
         msg = user_message.lower()
         rules = self.memory.setdefault("learned_rules", [])
         correction_markers = [
-            "actually", "no,", "wrong", "incorrect", "that's not right",
+            "actually,", "no,", "wrong", "incorrect", "that's not right",
             "it's actually", "the real", "should be", "is actually",
             "you're wrong", "thats wrong", "not correct", "the correct",
             "remember that", "keep in mind", "important:", "note:",
-            "i think", "my view is", "the way i see it",
-            "the fed is", "ecb is", "boj is", "boe is",
-            "rates are", "basis is", "the curve is",
+            "my view is", "the way i see it",
+            "you should", "you need to", "make sure", "always include",
+            "stop using", "don't use", "avoid using",
+            "be more specific", "too generic", "too vague", "more concrete",
+            "include pnl", "include carry", "include positioning",
         ]
         is_teaching = any(marker in msg for marker in correction_markers)
         if is_teaching and len(user_message) > 20:
@@ -1219,7 +1242,11 @@ class MacroLLM:
 
             score = overlap + recency + feedback_w + section_bonus + theme_bonus
 
-            if score >= 4:  # threshold unchanged
+            # Threshold lowered to 2.5 — overlap of 2 alone now qualifies, and
+            # any combination of overlap+recency or overlap+section_bonus also
+            # does. Previously, even a 3-word overlap on a recent good
+            # interaction in the same section barely cleared 4.
+            if score >= 2.5:
                 results.append((score, interaction))
 
         results.sort(key=lambda x: -x[0])
@@ -1233,7 +1260,8 @@ class MacroLLM:
         for correction in self.memory.get("trade_corrections", []):
             c_words = self._meaningful_words(correction.get("question", ""))
             score = len(q_words & c_words)
-            if score >= 4:  # Raised from 2
+            # Threshold lowered to 2 (was 4 — too high for short questions to ever match).
+            if score >= 2:
                 results.append(correction)
         return results[:2]
 
@@ -1315,9 +1343,18 @@ class MacroLLM:
             score = len(q_words & r_words)
             if section and rule.get("section", "") == section:
                 score += 2
-            if rule.get("source") == "conversation_correction":
-                score += 1
-            if score >= 4:  # Raised from 2
+            src = rule.get("source", "")
+            # Weight by feedback hierarchy: corrections (3.0x) > explicit feedback (2.0x)
+            # > observations (1.0x) > docs (0.5x). Encode as additive bonuses.
+            if src == "conversation_correction":
+                score += 3
+            elif src in ("section_feedback_down", "section_feedback_up",
+                         "positive_feedback"):
+                score += 2
+            elif src == "document":
+                score += 0  # docs already low-weight at write-time
+            # Threshold lowered to 2 (was 4) so explicit corrections actually surface.
+            if score >= 2:
                 results.append((score, rule))
         results.sort(key=lambda x: -x[0])
         return [r[1] for r in results[:5]]
@@ -1356,7 +1393,8 @@ class MacroLLM:
                     " ".join(doc["summary"].split()[:100])
                 )
                 score = len(q_words & title_words) * 3 + len(q_words & summary_words)
-                if score >= 6:  # Raised from 3
+                # Threshold 3 (was 6 — too high; uploaded docs almost never matched)
+                if score >= 3:
                     results.append((score, doc))
         results.sort(key=lambda x: -x[0])
         return [r[1] for r in results[:2]]
@@ -1377,7 +1415,10 @@ class MacroLLM:
             trade = entry.get("trade", "")
             if trade:
                 score += len(q_words & self._meaningful_words(trade))
-            if score >= 5 and (entry.get("rating") or note):  # Raised from 2
+            # Threshold lowered to 3 (was 5). With section bonus = 5, a section
+            # match alone already qualified, but note+keyword matches required
+            # too many word overlaps to ever fire on real questions.
+            if score >= 3 and (entry.get("rating") or note):
                 results.append((score, entry))
         results.sort(key=lambda x: -x[0])
         return [r[1] for r in results[:3]]
@@ -1390,7 +1431,8 @@ class MacroLLM:
         for ins in insights:
             i_words = self._meaningful_words(ins.get("insight", ""))
             score = len(q_words & i_words)
-            if score >= 4:  # Raised from 2
+            # Threshold lowered to 2 (was 4 — saved insights almost never surfaced).
+            if score >= 2:
                 results.append((score, ins))
         results.sort(key=lambda x: -x[0])
         return [r[1] for r in results[:2]]
@@ -1408,14 +1450,18 @@ class MacroLLM:
         Analyze past interactions and feedback to build a theme weight map.
         High-weight themes are prioritized in reasoning and response augmentation.
         Returns dict: theme -> float weight (1.0 = neutral, >1 = preferred, <1 = deprioritized)
+
+        Hierarchy applied (per system design):
+          - corrections        3.0x  (learned_rules with conversation_correction source)
+          - explicit feedback  2.0x  (section_feedback notes, chat thumbs)
+          - interactions       1.0x  (raw question themes weighted by good/bad)
+          - uploaded docs      0.5x  (handled at write-time; not re-counted here)
         """
         weights = {theme: 1.0 for theme in self.SIGNAL_KEYWORDS}
 
         interactions = self.memory.get("interactions", [])
-        if not interactions:
-            return weights
 
-        # Count theme frequency in good vs bad interactions
+        # ---- 1. Interactions: chat thumbs feedback signal (weight 1.0) ----
         theme_good = {t: 0 for t in weights}
         theme_bad = {t: 0 for t in weights}
         theme_total = {t: 0 for t in weights}
@@ -1432,24 +1478,61 @@ class MacroLLM:
                     elif feedback == "bad":
                         theme_bad[theme] += 1
 
+        # ---- 2. Section feedback (explicit feedback, weight 2.0) ----
+        # These come from feedback.json and reflect direct briefing-section
+        # ratings. Lower min-count threshold (1) since they're high-signal.
+        try:
+            fb_entries = db.load_feedback_entries(last_n_days=30)
+        except Exception:
+            fb_entries = []
+        for fb in fb_entries:
+            text = " ".join(filter(None, [fb.get("section", ""),
+                                           fb.get("trade", ""),
+                                           fb.get("note", "")]))
+            if not text:
+                continue
+            sigs = self.extract_signals(text)
+            rating = fb.get("rating", "")
+            for theme, active in sigs.items():
+                if active:
+                    # Each section-feedback entry counts as 2 observations
+                    theme_total[theme] += 2
+                    if rating == "up":
+                        theme_good[theme] += 2
+                    elif rating == "down":
+                        theme_bad[theme] += 2
+
         # Weights from positive/negative feedback ratios
         for theme in weights:
             total = theme_total[theme]
-            if total < 3:
-                continue  # not enough signal yet
+            if total < 2:  # was 3 — lowered to surface weights from few feedbacks
+                continue
             good_rate = theme_good[theme] / total
             bad_rate = theme_bad[theme] / total
             # Positive feedback on a theme → upweight; negative → downweight
             weights[theme] = 1.0 + (good_rate * 1.5) - (bad_rate * 1.0)
             weights[theme] = max(0.2, min(3.0, weights[theme]))  # clamp
 
-        # Boost themes explicitly requested in learned rules
+        # ---- 3. Learned rules from conversation_correction (weight 3.0) ----
         for rule in self.memory.get("learned_rules", [])[-100:]:
             rule_text = rule.get("rule", "").lower()
+            src = rule.get("source", "")
+            # Bigger boost for explicit corrections (3.0x), smaller for
+            # observation-derived rules.
+            if src == "conversation_correction":
+                bump = 0.30  # was 0.15
+            elif src in ("section_feedback_down", "section_feedback_up"):
+                bump = 0.20
+            else:
+                bump = 0.10
             for theme in weights:
-                # Explicit rule mentions theme → small persistent boost
-                if theme in rule_text or any(kw in rule_text for kw in self.SIGNAL_KEYWORDS.get(theme, [])):
-                    weights[theme] = min(3.0, weights[theme] + 0.15)
+                if theme in rule_text or any(kw in rule_text for kw in
+                                              self.SIGNAL_KEYWORDS.get(theme, [])):
+                    # Down-feedback should DOWNweight not upweight
+                    if src == "section_feedback_down":
+                        weights[theme] = max(0.2, weights[theme] - bump)
+                    else:
+                        weights[theme] = min(3.0, weights[theme] + bump)
 
         return weights
 
@@ -2323,24 +2406,37 @@ class MacroLLM:
         recent_rules = [r.get("rule", "").lower() for r in rules[-80:]]
         joined_rules = " ".join(recent_rules)
 
+        # Thresholds lowered to 1 occurrence for all triggers. A single explicit
+        # user note ("add pnl context", "be more specific") was previously
+        # ignored unless repeated 2+ times — that suppressed the entire
+        # learning loop for new corrections.
         wants_pnl = (joined_rules.count("pnl") + joined_rules.count("p&l") +
-                     joined_rules.count("carry") + joined_rules.count("return")) >= 2
-        wants_positioning = joined_rules.count("positioning") >= 2
+                     joined_rules.count("carry") + joined_rules.count("return")) >= 1
+        wants_positioning = joined_rules.count("positioning") >= 1
         wants_specific = (joined_rules.count("be specific") +
                           joined_rules.count("more concrete") +
                           joined_rules.count("specific instrument") +
-                          joined_rules.count("specific level")) >= 1
+                          joined_rules.count("specific level") +
+                          joined_rules.count("more specific") +
+                          joined_rules.count("too vague") +
+                          joined_rules.count("not specific")) >= 1
         avoid_generic = (joined_rules.count("too generic") +
                          joined_rules.count("avoid generic") +
                          joined_rules.count("dont use generic") +
                          joined_rules.count("don't use generic") +
-                         joined_rules.count("generic macro")) >= 1
+                         joined_rules.count("generic macro") +
+                         joined_rules.count("generic") +
+                         joined_rules.count("too vague")) >= 1
 
-        # Also check preference weights for a high-confidence signal
+        # Also check preference weights for a meaningful signal. Threshold
+        # lowered to 1.3 (was 1.8). With only 200 interactions in the rolling
+        # window, hitting 1.8 requires ~50%+ thumbs-up rate on a theme — too
+        # high. 1.3 fires when a theme has clear positive net feedback or has
+        # been mentioned in learned_rules a couple of times.
         pref = self._build_preference_weights()
-        if pref.get("positioning", 1.0) >= 1.8:
+        if pref.get("positioning", 1.0) >= 1.3:
             wants_positioning = True
-        if pref.get("carry", 1.0) >= 1.8 or pref.get("real_rates", 1.0) >= 1.8:
+        if pref.get("carry", 1.0) >= 1.3 or pref.get("real_rates", 1.0) >= 1.3:
             wants_pnl = True
 
         response_lower = response.lower()
@@ -3693,21 +3789,45 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
     def _briefing_memory_footer(self, learned_rules: list,
                                  feedback_entries: list,
                                  insights_list: list) -> str:
-        """Appended context block — shows what memory is shaping this briefing."""
+        """Appended context block — shows what memory is shaping this briefing.
+
+        Pulls from a wider window (last 60 rules, was 20) and includes
+        section_feedback rules so notes attached to thumbs-down on briefing
+        sections actually surface in the next briefing.
+        """
         parts = []
 
-        conv_corrections = [r for r in learned_rules[-20:]
-                            if r.get("source") == "conversation_correction"]
+        # Include conversation corrections AND section-feedback notes.
+        # Earlier this only included conversation_correction, which excluded
+        # the new section_feedback_down/up rules added by process_section_feedback.
+        relevant_sources = {"conversation_correction",
+                            "section_feedback_down", "section_feedback_up"}
+        conv_corrections = [r for r in learned_rules[-60:]
+                            if r.get("source") in relevant_sources]
         if conv_corrections:
-            parts.append("\n---\n_Applied corrections from past Q&A sessions:_")
-            for r in conv_corrections[-5:]:
-                parts.append(f"- [{r.get('timestamp', '')}] {r.get('rule', '')[:120]}")
+            parts.append("\n---\n_Applied corrections from past Q&A and section feedback:_")
+            seen = set()
+            for r in conv_corrections[-8:]:
+                txt = r.get("rule", "")[:120]
+                if txt in seen:
+                    continue
+                seen.add(txt)
+                parts.append(f"- [{r.get('timestamp', '')}] {txt}")
 
         good_fb = [fb for fb in feedback_entries[-30:]
                    if fb.get("rating") == "up" and fb.get("note")]
         if good_fb:
             parts.append("\n_Incorporating positively-rated feedback:_")
             for fb in good_fb[-3:]:
+                parts.append(f"- {fb.get('note', '')[:120]}")
+
+        # Show explicit thumbs-down feedback so the next briefing visibly
+        # reflects what the user wanted changed.
+        bad_fb = [fb for fb in feedback_entries[-30:]
+                  if fb.get("rating") == "down" and fb.get("note")]
+        if bad_fb:
+            parts.append("\n_Avoiding patterns flagged as not useful:_")
+            for fb in bad_fb[-3:]:
                 parts.append(f"- {fb.get('note', '')[:120]}")
 
         if parts:
@@ -3754,26 +3874,229 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
         """Process section-level feedback for regime learning.
 
         Called when user gives thumbs up/down on a briefing section.
+        A thumbs-down with no note still triggers regime decay on any regions
+        mentioned in the section text.
+
+        IMPORTANT: a non-empty note is ALSO promoted to a learned_rule so that
+        downstream consumers (_apply_learned_constraints, _get_relevant_learned_rules,
+        briefing footer, _build_preference_weights) actually see the signal.
+        Without this promotion the note was a dead-write — only feedback.json
+        retained it, and feedback.json is read by _find_relevant_feedback which
+        had a high score threshold.
         """
-        corrections = self.regime_model.parse_feedback_for_regime(note, section_text)
-        if corrections:
-            from regime_model import STATES
-            if rating == "down":
-                # Downvote with regime correction = high-weight override
+        from regime_model import STATES, _REGION_KEYWORDS
+        note = note or ""
+        section_label = ""
+        if section_text:
+            first_line = section_text.strip().split("\n")[0]
+            section_label = first_line.replace("##", "").replace("###", "").strip()[:200]
+
+        if rating == "down":
+            # Try to parse an explicit regime correction from the note first
+            corrections = self.regime_model.parse_feedback_for_regime(note, section_text)
+            if corrections:
                 for region, state_idx in corrections:
                     self.regime_model.apply_user_correction(region, state_idx)
             else:
-                # Upvote with regime signals = moderate reinforcement
+                # No explicit correction — decay belief toward uniform for any
+                # regions mentioned in the section (thumbs-down = "this is wrong")
+                combined = f"{note} {section_text}".lower()
+                for region, kws in _REGION_KEYWORDS.items():
+                    if any(kw in combined for kw in kws):
+                        self.regime_model.reinforce_from_feedback(region, positive=False)
+            # Promote the note to a learned_rule (negative feedback weight 2.0
+            # per the documented hierarchy: explicit feedback > observation).
+            if note.strip():
+                rules = self.memory.setdefault("learned_rules", [])
+                rules.append({
+                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    "rule": f"AVOID (section thumbs-down): {note[:400]}",
+                    "source": "section_feedback_down",
+                    "section": section_label,
+                })
+                if len(rules) > 300:
+                    self.memory["learned_rules"] = rules[-300:]
+            self._save_memory()
+            self._sync_learnings_to_briefing()
+        elif rating == "up":
+            corrections = self.regime_model.parse_feedback_for_regime(note, section_text)
+            if corrections:
                 for region, state_idx in corrections:
                     self.regime_model.update_from_observation(
                         region, state_idx, confidence=0.7, weight=1.5,
                         source="section_feedback"
                     )
-            self._save_memory()
+            # Promote a positive note to a learned_rule too — captures
+            # "what good looks like" for this section.
+            if note.strip():
+                rules = self.memory.setdefault("learned_rules", [])
+                rules.append({
+                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    "rule": f"PREFER (section thumbs-up): {note[:400]}",
+                    "source": "section_feedback_up",
+                    "section": section_label,
+                })
+                if len(rules) > 300:
+                    self.memory["learned_rules"] = rules[-300:]
+            if corrections or note.strip():
+                self._save_memory()
+                self._sync_learnings_to_briefing()
 
     def give_feedback(self, feedback: str) -> str:
         self.record_feedback(feedback)
         return "Feedback recorded and applied."
+
+    def diagnostic_report(self) -> dict:
+        """Return an end-to-end snapshot of the learning loop state.
+
+        Used by /api/diagnostic (admin only). Reads:
+          - preference weights (output of _build_preference_weights)
+          - feedback event counts by type and date (interactions + feedback.json)
+          - regime snapshot from regime_model
+          - last 5 corrections (learned_rules where source matches a
+            correction kind, plus trade_corrections) and whether each one
+            is reflected in the current regime state
+          - all learned rules with source breakdown
+        """
+        from regime_model import STATES, _REGION_KEYWORDS
+
+        # 1. Preference weights
+        pref = self._build_preference_weights()
+
+        # 2. Feedback event counts by type + date
+        interactions = self.memory.get("interactions", [])
+        chat_thumbs_good = sum(1 for ix in interactions if ix.get("feedback") == "good")
+        chat_thumbs_bad  = sum(1 for ix in interactions if ix.get("feedback") == "bad")
+
+        try:
+            fb_raw = db.load_feedback()  # {date: [entries]}
+        except Exception:
+            fb_raw = {}
+        section_up = section_down = trade_up = trade_down = 0
+        feedback_by_date = {}
+        for date_key, items in fb_raw.items():
+            day = {"section_up": 0, "section_down": 0,
+                   "trade_up": 0, "trade_down": 0}
+            for e in items:
+                rating = e.get("rating", "")
+                is_section = bool(e.get("section"))
+                if is_section and rating == "up":
+                    day["section_up"] += 1; section_up += 1
+                elif is_section and rating == "down":
+                    day["section_down"] += 1; section_down += 1
+                elif (not is_section) and rating == "up":
+                    day["trade_up"] += 1; trade_up += 1
+                elif (not is_section) and rating == "down":
+                    day["trade_down"] += 1; trade_down += 1
+            feedback_by_date[date_key] = day
+
+        try:
+            kb_files = db.list_knowledge_files()
+            doc_uploads_total = len(kb_files)
+            doc_uploads_active = sum(1 for d in kb_files if d.get("active"))
+        except Exception:
+            doc_uploads_total = doc_uploads_active = 0
+
+        # 3. Regime snapshot per region
+        regime_snapshot = self.regime_model.get_regime_snapshot()
+
+        # 4. Last 5 corrections + whether reflected in regime
+        learned_rules = self.memory.get("learned_rules", [])
+        correction_sources = {"conversation_correction",
+                              "section_feedback_down", "section_feedback_up"}
+        recent_corrections = [r for r in learned_rules
+                              if r.get("source") in correction_sources][-5:]
+        trade_corrs = self.memory.get("trade_corrections", [])[-5:]
+
+        corrections_view = []
+        for r in recent_corrections:
+            rule_text = r.get("rule", "")
+            # Try to parse a region+state from the rule text and check if the
+            # current regime matches that intent.
+            parsed = self.regime_model.parse_regime_correction(rule_text)
+            reflections = []
+            for region, expected_state in parsed:
+                cur = self.regions_safe(region)
+                cur_state = cur.get("current_state")
+                reflected = (cur_state == expected_state)
+                reflections.append({
+                    "region": region,
+                    "expected_state": STATES[expected_state],
+                    "current_state": (STATES[cur_state] if cur_state is not None
+                                       else "UNKNOWN"),
+                    "current_confidence": round(cur.get("confidence", 0), 3),
+                    "reflected_in_regime": reflected,
+                })
+            corrections_view.append({
+                "timestamp": r.get("timestamp", ""),
+                "source": r.get("source", ""),
+                "section": r.get("section", ""),
+                "rule_preview": rule_text[:200],
+                "regime_reflections": reflections,
+            })
+
+        trade_corrs_view = [{
+            "timestamp": tc.get("timestamp", ""),
+            "question_preview": tc.get("question", "")[:160],
+            "section": tc.get("section", ""),
+        } for tc in trade_corrs]
+
+        # 5. Source breakdown of all learned rules
+        source_counts = {}
+        for r in learned_rules:
+            src = r.get("source", "unknown")
+            source_counts[src] = source_counts.get(src, 0) + 1
+
+        # 6. Regions with active user_corrected_at stamp (briefing-dampening)
+        recently_corrected = []
+        from datetime import datetime as _dt
+        for region, r in self.regime_model.regions.items():
+            corrected_at = r.get("user_corrected_at")
+            if corrected_at:
+                try:
+                    days = (_dt.now().date() -
+                            _dt.strptime(corrected_at, "%Y-%m-%d").date()).days
+                except ValueError:
+                    days = None
+                recently_corrected.append({
+                    "region": region,
+                    "user_corrected_at": corrected_at,
+                    "days_since": days,
+                })
+
+        return {
+            "preference_weights": {k: round(v, 3) for k, v in pref.items()},
+            "high_signal_themes": [k for k, v in pref.items() if v >= 1.3],
+            "feedback_counts": {
+                "chat_thumbs_good": chat_thumbs_good,
+                "chat_thumbs_bad": chat_thumbs_bad,
+                "section_up": section_up,
+                "section_down": section_down,
+                "trade_up": trade_up,
+                "trade_down": trade_down,
+                "doc_uploads_total": doc_uploads_total,
+                "doc_uploads_active": doc_uploads_active,
+                "interactions_stored": len(interactions),
+                "learned_rules_total": len(learned_rules),
+                "trade_corrections_total": len(self.memory.get(
+                    "trade_corrections", [])),
+            },
+            "feedback_by_date": feedback_by_date,
+            "regime_snapshot": regime_snapshot,
+            "recent_corrections": corrections_view,
+            "recent_trade_corrections": trade_corrs_view,
+            "learned_rules_by_source": source_counts,
+            "regions_with_active_user_correction": recently_corrected,
+            "memory_caps": {
+                "interactions_cap": 500,
+                "learned_rules_cap": 300,
+                "trade_corrections_cap": 200,
+            },
+        }
+
+    def regions_safe(self, region: str) -> dict:
+        """Convenience: return regime_model.regions[region] or empty dict."""
+        return self.regime_model.regions.get(region, {})
 
     def override_regime(self, signal_context: dict, correct_regime: str):
         key = correct_regime.lower().replace(" ", "_")

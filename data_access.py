@@ -9,6 +9,7 @@ gunicorn runs with --workers 1 --threads 4.
 """
 
 import json
+import os
 import threading
 from pathlib import Path
 
@@ -52,9 +53,16 @@ def _read_json(path: Path, default=None):
 
 
 def _write_json(path: Path, data):
-    """Write data to a JSON file (thread-safe)."""
+    """Write data to a JSON file (thread-safe + atomic).
+
+    Writes to a sibling .tmp file then os.replace() — guarantees that a
+    reader will never see a partial file. If the process is killed mid-
+    write, the original (intact) file remains.
+    """
     with _write_lock:
-        path.write_text(json.dumps(data, indent=2))
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(data, indent=2))
+        os.replace(str(tmp), str(path))
 
 
 # ── Feedback ─────────────────────────────────────────────────────────────────

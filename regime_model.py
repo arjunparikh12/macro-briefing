@@ -317,10 +317,16 @@ class MarkovRegimeModel:
                                           confidence)
 
     def apply_user_correction(self, region: str, correct_state: int):
-        """Force-update a region's state from user correction (high weight)."""
+        """Force-update a region's state from user correction (high weight).
+
+        Also stamps a correction timestamp so that the next few daily briefing
+        runs don't fully overwrite the user's explicit view.
+        """
         self.update_from_observation(region, correct_state,
                                       confidence=1.0, weight=3.0,
                                       source="user_correction")
+        # Stamp timestamp so classify_from_briefing reduces its weight for this region
+        self.regions[region]["user_corrected_at"] = datetime.now().strftime("%Y-%m-%d")
 
     def reinforce_from_feedback(self, region: str, positive: bool):
         """Reinforce or decay regime confidence based on chat feedback."""
@@ -451,8 +457,24 @@ class MarkovRegimeModel:
 
             if confidence >= 0.3:  # Minimum confidence threshold
                 results[region] = (best_state, confidence)
+                # Reduce briefing influence if user recently corrected this region.
+                # A user correction (weight 3.0) should hold for ~5 trading days
+                # before daily briefings can fully overwrite it.
+                briefing_weight = 1.0
+                corrected_at = self.regions[region].get("user_corrected_at")
+                if corrected_at:
+                    try:
+                        days_since = (datetime.now().date() -
+                                      datetime.strptime(corrected_at, "%Y-%m-%d").date()).days
+                        if days_since <= 5:
+                            briefing_weight = 0.2  # strongly dampened
+                        elif days_since <= 10:
+                            briefing_weight = 0.5  # moderately dampened
+                    except ValueError:
+                        pass
                 self.update_from_observation(region, best_state,
-                                              confidence=confidence, weight=1.0,
+                                              confidence=confidence,
+                                              weight=briefing_weight,
                                               source="briefing")
 
         return results
@@ -902,21 +924,28 @@ class MarkovRegimeModel:
 
         E.g., "the ECB is actually hawkish" → [("EUR", 0)]
         E.g., "BOJ is easing" → [("JPY", 2)]
+        E.g., "Fed is not hawkish / not hiking" → [("USD", 2)]  (negation flips state)
 
         Returns list of (region, state_idx) tuples.
         Uses proximity — finds the state keyword closest to each region mention.
+        Handles negation: "not hawkish/not hiking" → easing, "not easing" → hold.
         """
         t = text.lower()
         corrections = []
 
         # Map keywords to states
         state_map = {
-            "hawkish": 0, "tightening": 0, "hiking": 0,
-            "restrictive": 1, "on hold": 1, "holding": 1, "pausing": 1,
-            "easing": 2, "dovish": 2, "cutting": 2, "pivoting": 2,
+            "hawkish": 0, "tightening": 0, "hiking": 0, "hike": 0,
+            "restrictive": 1, "on hold": 1, "holding": 1, "pausing": 1, "pause": 1,
+            "easing": 2, "dovish": 2, "cutting": 2, "pivoting": 2, "cut": 2,
             "accommodative": 3, "loose": 3, "ultra-loose": 3, "stimulating": 3,
             "reflation": 4, "normalizing": 4, "tapering": 4, "recovering": 4,
         }
+
+        # Negation flips: state 0 (hawkish) → 2 (easing), state 1 (hold) → 2 (easing),
+        # state 2 (easing) → 1 (hold), state 3 (accommodative) → 1 (hold), state 4 → 1
+        _NEGATION_FLIP = {0: 2, 1: 2, 2: 1, 3: 1, 4: 1}
+        _NEGATION_PREFIX = re.compile(r"\b(not|isn't|is not|no longer|hasn't|never|didn't|don't)\b.{0,15}$")
 
         # Check each region
         for region, kws in _REGION_KEYWORDS.items():
@@ -929,18 +958,32 @@ class MarkovRegimeModel:
             if region_pos == -1:
                 continue
 
-            # Find the CLOSEST state keyword to this region mention
+            # Find the CLOSEST state keyword to this region mention.
+            # Earlier this used t.find(state_kw) which returns ONLY the first
+            # occurrence — so in "BoE hawkish, ECB dovish" both regions matched
+            # the same first hawkish/dovish position. We now scan all
+            # occurrences of each state keyword and pick the globally closest.
             best_state = None
             best_dist = float("inf")
+            best_negated = False
             for state_kw, state_idx in state_map.items():
-                pos = t.find(state_kw)
-                if pos != -1:
+                start = 0
+                while True:
+                    pos = t.find(state_kw, start)
+                    if pos == -1:
+                        break
                     dist = abs(pos - region_pos)
                     if dist < best_dist:
                         best_dist = dist
                         best_state = state_idx
+                        # Check for negation in the 30 chars before the keyword
+                        prefix = t[max(0, pos - 30):pos]
+                        best_negated = bool(_NEGATION_PREFIX.search(prefix))
+                    start = pos + len(state_kw)
 
             if best_state is not None and best_dist < 200:
+                if best_negated:
+                    best_state = _NEGATION_FLIP.get(best_state, best_state)
                 corrections.append((region, best_state))
 
         return corrections

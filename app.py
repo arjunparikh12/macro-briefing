@@ -412,7 +412,7 @@ def api_save_feedback():
             note = e.get("note", "")
             section = e.get("section", e.get("trade", ""))
             rating = e.get("rating", "")
-            if note and rating:
+            if rating:
                 llm.process_section_feedback(section, note, rating)
     except Exception:
         pass  # Don't fail the feedback save if regime update fails
@@ -660,6 +660,31 @@ def api_chat_feedback():
     llm = get_macro_llm()
     llm.give_feedback(feedback)
     return jsonify({"ok": True})
+
+@app.route("/api/diagnostic", methods=["GET"])
+@admin_required
+def api_diagnostic():
+    """End-to-end diagnostic of the learning/feedback loop.
+
+    Returns:
+      - preference_weights per theme (output of _build_preference_weights)
+      - feedback_counts by type and date
+      - regime_snapshot per region
+      - recent_corrections (last 5 from learned_rules + trade_corrections)
+        each with whether they're reflected in the current regime state
+      - learned_rules_by_source breakdown
+      - regions_with_active_user_correction (which regions have a user
+        correction within the last 5 days that's dampening briefing inputs)
+
+    Admin only. Useful when diagnosing why the system isn't learning.
+    """
+    try:
+        llm = get_macro_llm()
+        return jsonify(llm.diagnostic_report())
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
 
 @app.route("/api/chat/save-insight", methods=["POST"])
 @admin_required

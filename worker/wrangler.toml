@@ -1,0 +1,16 @@
+name = "macro-feedback"
+main = "src/index.js"
+compatibility_date = "2025-01-01"
+
+# Public-facing config — edit these for your repo and Pages origin.
+[vars]
+GITHUB_OWNER   = "arjunparikh12"
+GITHUB_REPO    = "macro-briefing"
+ALLOWED_ORIGIN = "https://arjunparikh12.github.io"
+
+# Secrets are NOT stored here. Set them with:
+#   wrangler secret put GITHUB_TOKEN
+#
+# The token must be a fine-grained PAT with:
+#   Repository access: only "macro-briefing"
+#   Permissions: Contents = Read & Write (workflows trigger via repo dispatch)

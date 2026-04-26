@@ -1,7 +1,12 @@
 __pycache__/
 *.pyc
 .env
-data/briefings/
-data/feedback.json
-data/.paused
+.venv/
 venv/
+
+# Old Railway-era state — feedback now lives in repo (committed by feedback-handler workflow).
+# Pause flag was Flask-app only.
+data/.paused
+
+# Local-dev briefing markdowns (the canonical artefacts now live in docs/data/).
+data/briefings/

@@ -1,0 +1,570 @@
+{
+  "interactions": [
+    {
+      "timestamp": "2026-04-26 17:23",
+      "question": "[Daily briefing generated: 2026-04-26]",
+      "answer": "# Macro Briefing \u2014 2026-04-26\n_Generated 05:23 PM ET on Sunday, April 26, 2026_\n\n## Market Summary\n\nUSD regime not yet classified \u2014 insufficient data. - Fed Funds Effective Rate: 3.64 % annualised (as of 2026-03-01) - US Unemployment Rate: 4.3 % (as of 2026-03-01) - US 10Y Treasury Yield: 4.34 % yield (as of 2026-04-23)\n\nNo strong FX divergence signal from regime model.\n\nNo strong basis signal. - 10Y-2Y Spread: 0.53 bp (\u00d7100) (as of 2026-04-24) - SOFR: 3.65 % annualised (as of 2026-04-23)\n\n**Key",
+      "section": "daily_briefing",
+      "regime": "full_briefing",
+      "themes": [
+        "fed",
+        "ecb",
+        "curve",
+        "basis",
+        "fx"
+      ]
+    },
+    {
+      "timestamp": "2026-04-26 17:38",
+      "question": "[Daily briefing generated: 2026-04-26]",
+      "answer": "# Macro Briefing \u2014 2026-04-26\n_Generated 05:37 PM ET on Sunday, April 26, 2026_\n\n## Market Summary\n\nUSD regime not yet classified \u2014 insufficient data. - Fed Funds Effective Rate: 3.64 % annualised (as of 2026-03-01) - US Unemployment Rate: 4.3 % (as of 2026-03-01) - US 10Y Treasury Yield: 4.34 % yield (as of 2026-04-23)\n\nNo strong FX divergence signal from regime model.\n\nNo strong basis signal. - 10Y-2Y Spread: 0.53 bp (\u00d7100) (as of 2026-04-24) - SOFR: 3.65 % annualised (as of 2026-04-23)\n\n**Key",
+      "section": "daily_briefing",
+      "regime": "full_briefing",
+      "themes": [
+        "fed",
+        "ecb",
+        "curve",
+        "basis",
+        "fx"
+      ]
+    },
+    {
+      "timestamp": "2026-04-26 17:39",
+      "question": "[Daily briefing generated: 2026-04-26]",
+      "answer": "# Macro Briefing \u2014 2026-04-26\n_Generated 05:38 PM ET on Sunday, April 26, 2026_\n\n## Market Summary\n\nUSD regime not yet classified \u2014 insufficient data. - Fed Funds Effective Rate: 3.64 % annualised (as of 2026-03-01) - US Unemployment Rate: 4.3 % (as of 2026-03-01) - US 10Y Treasury Yield: 4.34 % yield (as of 2026-04-23)\n\nNo strong FX divergence signal from regime model.\n\nNo strong basis signal. - 10Y-2Y Spread: 0.53 bp (\u00d7100) (as of 2026-04-24) - SOFR: 3.65 % annualised (as of 2026-04-23)\n\n**Key",
+      "section": "daily_briefing",
+      "regime": "full_briefing",
+      "themes": [
+        "fed",
+        "ecb",
+        "curve",
+        "basis",
+        "fx"
+      ]
+    },
+    {
+      "timestamp": "2026-04-26 17:39",
+      "question": "[Daily briefing generated: 2026-04-26]",
+      "answer": "# Macro Briefing \u2014 2026-04-26\n_Generated 05:39 PM ET on Sunday, April 26, 2026_\n\n## Market Summary\n\nUSD regime not yet classified \u2014 insufficient data. - Fed Funds Effective Rate: 3.64 % annualised (as of 2026-03-01) - US Unemployment Rate: 4.3 % (as of 2026-03-01) - US 10Y Treasury Yield: 4.34 % yield (as of 2026-04-23)\n\nNo strong FX divergence signal from regime model.\n\nNo strong basis signal. - 10Y-2Y Spread: 0.53 bp (\u00d7100) (as of 2026-04-24) - SOFR: 3.65 % annualised (as of 2026-04-23)\n\n**Key",
+      "section": "daily_briefing",
+      "regime": "full_briefing",
+      "themes": [
+        "fed",
+        "ecb",
+        "curve",
+        "basis",
+        "fx"
+      ]
+    }
+  ],
+  "patterns": {},
+  "learned_rules": [],
+  "regime_overrides": {},
+  "trade_corrections": [],
+  "regime_system": {
+    "regions": {
+      "USD": {
+        "belief": [
+          0.2,
+          0.2,
+          0.2,
+          0.2,
+          0.2
+        ],
+        "counts": [
+          [
+            17.5,
+            5.0,
+            1.25,
+            0.5,
+            0.75
+          ],
+          [
+            0.75,
+            17.5,
+            5.0,
+            1.25,
+            0.5
+          ],
+          [
+            0.5,
+            0.75,
+            17.5,
+            5.0,
+            1.25
+          ],
+          [
+            1.25,
+            0.5,
+            0.75,
+            17.5,
+            5.0
+          ],
+          [
+            5.0,
+            1.25,
+            0.5,
+            0.75,
+            17.5
+          ]
+        ],
+        "current_state": null,
+        "confidence": 0.0,
+        "last_updated": null,
+        "observation_count": 0
+      },
+      "EUR": {
+        "belief": [
+          0.2,
+          0.2,
+          0.2,
+          0.2,
+          0.2
+        ],
+        "counts": [
+          [
+            17.5,
+            5.0,
+            1.25,
+            0.5,
+            0.75
+          ],
+          [
+            0.75,
+            17.5,
+            5.0,
+            1.25,
+            0.5
+          ],
+          [
+            0.5,
+            0.75,
+            17.5,
+            5.0,
+            1.25
+          ],
+          [
+            1.25,
+            0.5,
+            0.75,
+            17.5,
+            5.0
+          ],
+          [
+            5.0,
+            1.25,
+            0.5,
+            0.75,
+            17.5
+          ]
+        ],
+        "current_state": null,
+        "confidence": 0.0,
+        "last_updated": null,
+        "observation_count": 0
+      },
+      "GBP": {
+        "belief": [
+          0.2,
+          0.2,
+          0.2,
+          0.2,
+          0.2
+        ],
+        "counts": [
+          [
+            17.5,
+            5.0,
+            1.25,
+            0.5,
+            0.75
+          ],
+          [
+            0.75,
+            17.5,
+            5.0,
+            1.25,
+            0.5
+          ],
+          [
+            0.5,
+            0.75,
+            17.5,
+            5.0,
+            1.25
+          ],
+          [
+            1.25,
+            0.5,
+            0.75,
+            17.5,
+            5.0
+          ],
+          [
+            5.0,
+            1.25,
+            0.5,
+            0.75,
+            17.5
+          ]
+        ],
+        "current_state": null,
+        "confidence": 0.0,
+        "last_updated": null,
+        "observation_count": 0
+      },
+      "JPY": {
+        "belief": [
+          0.2,
+          0.2,
+          0.2,
+          0.2,
+          0.2
+        ],
+        "counts": [
+          [
+            17.5,
+            5.0,
+            1.25,
+            0.5,
+            0.75
+          ],
+          [
+            0.75,
+            17.5,
+            5.0,
+            1.25,
+            0.5
+          ],
+          [
+            0.5,
+            0.75,
+            17.5,
+            5.0,
+            1.25
+          ],
+          [
+            1.25,
+            0.5,
+            0.75,
+            17.5,
+            5.0
+          ],
+          [
+            5.0,
+            1.25,
+            0.5,
+            0.75,
+            17.5
+          ]
+        ],
+        "current_state": null,
+        "confidence": 0.0,
+        "last_updated": null,
+        "observation_count": 0
+      },
+      "AUD": {
+        "belief": [
+          0.2,
+          0.2,
+          0.2,
+          0.2,
+          0.2
+        ],
+        "counts": [
+          [
+            17.5,
+            5.0,
+            1.25,
+            0.5,
+            0.75
+          ],
+          [
+            0.75,
+            17.5,
+            5.0,
+            1.25,
+            0.5
+          ],
+          [
+            0.5,
+            0.75,
+            17.5,
+            5.0,
+            1.25
+          ],
+          [
+            1.25,
+            0.5,
+            0.75,
+            17.5,
+            5.0
+          ],
+          [
+            5.0,
+            1.25,
+            0.5,
+            0.75,
+            17.5
+          ]
+        ],
+        "current_state": null,
+        "confidence": 0.0,
+        "last_updated": null,
+        "observation_count": 0
+      },
+      "CHF": {
+        "belief": [
+          0.2,
+          0.2,
+          0.2,
+          0.2,
+          0.2
+        ],
+        "counts": [
+          [
+            17.5,
+            5.0,
+            1.25,
+            0.5,
+            0.75
+          ],
+          [
+            0.75,
+            17.5,
+            5.0,
+            1.25,
+            0.5
+          ],
+          [
+            0.5,
+            0.75,
+            17.5,
+            5.0,
+            1.25
+          ],
+          [
+            1.25,
+            0.5,
+            0.75,
+            17.5,
+            5.0
+          ],
+          [
+            5.0,
+            1.25,
+            0.5,
+            0.75,
+            17.5
+          ]
+        ],
+        "current_state": null,
+        "confidence": 0.0,
+        "last_updated": null,
+        "observation_count": 0
+      },
+      "CNY": {
+        "belief": [
+          0.2,
+          0.2,
+          0.2,
+          0.2,
+          0.2
+        ],
+        "counts": [
+          [
+            17.5,
+            5.0,
+            1.25,
+            0.5,
+            0.75
+          ],
+          [
+            0.75,
+            17.5,
+            5.0,
+            1.25,
+            0.5
+          ],
+          [
+            0.5,
+            0.75,
+            17.5,
+            5.0,
+            1.25
+          ],
+          [
+            1.25,
+            0.5,
+            0.75,
+            17.5,
+            5.0
+          ],
+          [
+            5.0,
+            1.25,
+            0.5,
+            0.75,
+            17.5
+          ]
+        ],
+        "current_state": null,
+        "confidence": 0.0,
+        "last_updated": null,
+        "observation_count": 0
+      },
+      "SEK": {
+        "belief": [
+          0.2,
+          0.2,
+          0.2,
+          0.2,
+          0.2
+        ],
+        "counts": [
+          [
+            17.5,
+            5.0,
+            1.25,
+            0.5,
+            0.75
+          ],
+          [
+            0.75,
+            17.5,
+            5.0,
+            1.25,
+            0.5
+          ],
+          [
+            0.5,
+            0.75,
+            17.5,
+            5.0,
+            1.25
+          ],
+          [
+            1.25,
+            0.5,
+            0.75,
+            17.5,
+            5.0
+          ],
+          [
+            5.0,
+            1.25,
+            0.5,
+            0.75,
+            17.5
+          ]
+        ],
+        "current_state": null,
+        "confidence": 0.0,
+        "last_updated": null,
+        "observation_count": 0
+      },
+      "NOK": {
+        "belief": [
+          0.2,
+          0.2,
+          0.2,
+          0.2,
+          0.2
+        ],
+        "counts": [
+          [
+            17.5,
+            5.0,
+            1.25,
+            0.5,
+            0.75
+          ],
+          [
+            0.75,
+            17.5,
+            5.0,
+            1.25,
+            0.5
+          ],
+          [
+            0.5,
+            0.75,
+            17.5,
+            5.0,
+            1.25
+          ],
+          [
+            1.25,
+            0.5,
+            0.75,
+            17.5,
+            5.0
+          ],
+          [
+            5.0,
+            1.25,
+            0.5,
+            0.75,
+            17.5
+          ]
+        ],
+        "current_state": null,
+        "confidence": 0.0,
+        "last_updated": null,
+        "observation_count": 0
+      },
+      "CAD": {
+        "belief": [
+          0.2,
+          0.2,
+          0.2,
+          0.2,
+          0.2
+        ],
+        "counts": [
+          [
+            17.5,
+            5.0,
+            1.25,
+            0.5,
+            0.75
+          ],
+          [
+            0.75,
+            17.5,
+            5.0,
+            1.25,
+            0.5
+          ],
+          [
+            0.5,
+            0.75,
+            17.5,
+            5.0,
+            1.25
+          ],
+          [
+            1.25,
+            0.5,
+            0.75,
+            17.5,
+            5.0
+          ],
+          [
+            5.0,
+            1.25,
+            0.5,
+            0.75,
+            17.5
+          ]
+        ],
+        "current_state": null,
+        "confidence": 0.0,
+        "last_updated": null,
+        "observation_count": 0
+      }
+    },
+    "version": 2,
+    "last_saved": "2026-04-26 17:39"
+  }
+}

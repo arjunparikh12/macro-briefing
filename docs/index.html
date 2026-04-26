@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Macro Trader</title>
+<link rel="stylesheet" href="styles.css">
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js" defer></script>
+<script src="config.js" defer></script>
+<script src="app.js" defer></script>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="logo">AI Macro Trader<span>Rates · FX · Cross-Currency Basis</span></div>
+    <div class="header-right">
+      <span class="header-user" id="user-label">Anonymous</span>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="sidebar-title">Briefings</div>
+      <div id="briefing-list" class="briefing-list">
+        <div class="muted">Loading…</div>
+      </div>
+      <div class="sidebar-footer">
+        <a href="https://github.com/arjunparikh12/macro-briefing" target="_blank" rel="noopener">Source on GitHub →</a>
+      </div>
+    </aside>
+
+    <main>
+      <div id="briefing-view" class="briefing-view">
+        <div class="empty-state">
+          <div class="empty-title">Select a briefing</div>
+          <div class="empty-sub">Briefings are generated automatically at 6 AM ET on weekdays.</div>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+</body>
+</html>

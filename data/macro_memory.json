@@ -125,6 +125,20 @@
         "basis",
         "fx"
       ]
+    },
+    {
+      "timestamp": "2026-05-01 11:01",
+      "question": "[Daily briefing generated: 2026-05-01]",
+      "answer": "# Macro Briefing \u2014 2026-05-01\n_Generated 06:59 AM ET on Friday, May 01, 2026_\n\n## Market Summary\n\nUSD regime not yet classified \u2014 insufficient data. - Fed Funds Effective Rate: 3.64 % annualised (as of 2026-03-01) - US Unemployment Rate: 4.3 % (as of 2026-03-01) - US 10Y Treasury Yield: 4.42 % yield (as of 2026-04-29)\n\nNo strong FX divergence signal from regime model.\n\nNo strong basis signal. - 10Y-2Y Spread: 0.52 bp (\u00d7100) (as of 2026-04-30) - SOFR: 3.63 % annualised (as of 2026-04-29)\n\n**Key l",
+      "section": "daily_briefing",
+      "regime": "full_briefing",
+      "themes": [
+        "fed",
+        "ecb",
+        "curve",
+        "basis",
+        "fx"
+      ]
     }
   ],
   "patterns": {},
@@ -235,11 +249,11 @@
       },
       "GBP": {
         "belief": [
-          0.13999999999999999,
-          0.44,
-          0.13999999999999999,
-          0.13999999999999999,
-          0.13999999999999999
+          0.098,
+          0.6080000000000001,
+          0.098,
+          0.098,
+          0.098
         ],
         "counts": [
           [
@@ -251,7 +265,7 @@
           ],
           [
             0.75,
-            18.5,
+            19.5,
             5.0,
             1.25,
             0.5
@@ -279,9 +293,9 @@
           ]
         ],
         "current_state": 1,
-        "confidence": 0.44,
-        "last_updated": "2026-04-30 11:22",
-        "observation_count": 1
+        "confidence": 0.6080000000000001,
+        "last_updated": "2026-05-01 11:01",
+        "observation_count": 2
       },
       "JPY": {
         "belief": [
@@ -635,6 +649,6 @@
       }
     },
     "version": 2,
-    "last_saved": "2026-04-30 11:22"
+    "last_saved": "2026-05-01 11:01"
   }
 }

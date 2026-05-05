@@ -1,6 +1,13 @@
 {
-  "updated_at": "2026-05-04T11:31:37Z",
+  "updated_at": "2026-05-05T11:09:34Z",
   "briefings": [
+    {
+      "id": "2026-05-05",
+      "date": "2026-05-05",
+      "title": "Macro Briefing — 2026-05-05",
+      "subtitle": "Generated 07:08 AM ET on Tuesday, May 05, 2026",
+      "generated_at": "2026-05-05T11:09:34Z"
+    },
     {
       "id": "2026-05-04",
       "date": "2026-05-04",

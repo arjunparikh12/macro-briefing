@@ -195,6 +195,20 @@
         "basis",
         "fx"
       ]
+    },
+    {
+      "timestamp": "2026-05-08 11:02",
+      "question": "[Daily briefing generated: 2026-05-08]",
+      "answer": "# Macro Briefing \u2014 2026-05-08\n_Generated 07:00 AM ET on Friday, May 08, 2026_\n\n## Market Summary\n\nUSD regime not yet classified \u2014 insufficient data. - Fed Funds Effective Rate: 3.64 % annualised (as of 2026-04-01) - US Unemployment Rate: 4.3 % (as of 2026-03-01) - US 10Y Treasury Yield: 4.36 % yield (as of 2026-05-06)\n\nNo strong FX divergence signal from regime model.\n\nNo strong basis signal. - 10Y-2Y Spread: 0.49 bp (\u00d7100) (as of 2026-05-07) - SOFR: 3.61 % annualised (as of 2026-05-06)\n\n**Key l",
+      "section": "daily_briefing",
+      "regime": "full_briefing",
+      "themes": [
+        "fed",
+        "ecb",
+        "curve",
+        "basis",
+        "fx"
+      ]
     }
   ],
   "patterns": {},
@@ -255,11 +269,11 @@
       },
       "EUR": {
         "belief": [
-          0.2,
-          0.2,
-          0.2,
-          0.2,
-          0.2
+          0.20448877805486287,
+          0.19700748129675813,
+          0.19950124688279303,
+          0.19950124688279303,
+          0.19950124688279303
         ],
         "counts": [
           [
@@ -298,18 +312,18 @@
             17.5
           ]
         ],
-        "current_state": null,
-        "confidence": 0.0,
+        "current_state": 0,
+        "confidence": 0.20448877805486287,
         "last_updated": null,
         "observation_count": 0
       },
       "GBP": {
         "belief": [
-          0.0686,
-          0.7256,
-          0.0686,
-          0.0686,
-          0.0686
+          0.16174,
+          0.6530400000000001,
+          0.061739999999999996,
+          0.061739999999999996,
+          0.061739999999999996
         ],
         "counts": [
           [
@@ -320,7 +334,7 @@
             0.75
           ],
           [
-            0.75,
+            1.0833333333333333,
             20.5,
             5.0,
             1.25,
@@ -349,9 +363,9 @@
           ]
         ],
         "current_state": 1,
-        "confidence": 0.7256,
-        "last_updated": "2026-05-04 11:31",
-        "observation_count": 3
+        "confidence": 0.6530400000000001,
+        "last_updated": "2026-05-08 11:02",
+        "observation_count": 4
       },
       "JPY": {
         "belief": [
@@ -705,6 +719,6 @@
       }
     },
     "version": 2,
-    "last_saved": "2026-05-07 11:31"
+    "last_saved": "2026-05-08 11:02"
   }
 }

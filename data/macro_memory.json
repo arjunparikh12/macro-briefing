@@ -265,6 +265,20 @@
         "basis",
         "fx"
       ]
+    },
+    {
+      "timestamp": "2026-05-15 11:46",
+      "question": "[Daily briefing generated: 2026-05-15]",
+      "answer": "# Macro Briefing \u2014 2026-05-15\n_Generated 07:46 AM ET on Friday, May 15, 2026_\n\n## Market Summary\n\nUSD regime not yet classified \u2014 insufficient data. - Fed Funds Effective Rate: 3.64 % annualised (as of 2026-04-01) - US Unemployment Rate: 4.3 % (as of 2026-04-01) - US 10Y Treasury Yield: 4.46 % yield (as of 2026-05-13)\n\nNo strong FX divergence signal from regime model.\n\nNo strong basis signal. - 10Y-2Y Spread: 0.48 bp (\u00d7100) (as of 2026-05-13) - SOFR: 3.59 % annualised (as of 2026-05-13)\n\n**Key l",
+      "section": "daily_briefing",
+      "regime": "full_briefing",
+      "themes": [
+        "fed",
+        "ecb",
+        "curve",
+        "basis",
+        "fx"
+      ]
     }
   ],
   "patterns": {},
@@ -375,11 +389,11 @@
       },
       "GBP": {
         "belief": [
-          0.079462862,
-          0.6595385520000001,
-          0.20033286199999997,
-          0.030332861999999995,
-          0.030332861999999995
+          0.06754343269999999,
+          0.7106077692000001,
+          0.17028293269999997,
+          0.025782932699999997,
+          0.025782932699999997
         ],
         "counts": [
           [
@@ -391,7 +405,7 @@
           ],
           [
             1.0833333333333333,
-            22.0,
+            22.5,
             5.666666666666667,
             1.25,
             0.5
@@ -419,9 +433,9 @@
           ]
         ],
         "current_state": 1,
-        "confidence": 0.6595385520000001,
-        "last_updated": "2026-05-14 11:42",
-        "observation_count": 8
+        "confidence": 0.7106077692000001,
+        "last_updated": "2026-05-15 11:46",
+        "observation_count": 9
       },
       "JPY": {
         "belief": [
@@ -775,6 +789,6 @@
       }
     },
     "version": 2,
-    "last_saved": "2026-05-14 11:42"
+    "last_saved": "2026-05-15 11:46"
   }
 }

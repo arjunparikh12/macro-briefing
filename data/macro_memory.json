@@ -433,6 +433,20 @@
         "basis",
         "fx"
       ]
+    },
+    {
+      "timestamp": "2026-06-02 13:46",
+      "question": "[Daily briefing generated: 2026-06-02]",
+      "answer": "# Macro Briefing \u2014 2026-06-02\n_Generated 09:45 AM ET on Tuesday, June 02, 2026_\n\n## Market Summary\n\nUSD regime not yet classified \u2014 insufficient data. - Fed Funds Effective Rate: 3.63 % annualised (as of 2026-05-01) - US Unemployment Rate: 4.3 % (as of 2026-04-01) - US 10Y Treasury Yield: 4.45 % yield (as of 2026-05-29)\n\nNo strong FX divergence signal from regime model. - Historic bullion rally boosts metal\u2019s share of reserves to 27% while central banks diversify away from dollar\n\nNo strong basi",
+      "section": "daily_briefing",
+      "regime": "full_briefing",
+      "themes": [
+        "fed",
+        "ecb",
+        "curve",
+        "basis",
+        "fx"
+      ]
     }
   ],
   "patterns": {},
@@ -943,6 +957,6 @@
       }
     },
     "version": 2,
-    "last_saved": "2026-06-01 15:47"
+    "last_saved": "2026-06-02 13:46"
   }
 }

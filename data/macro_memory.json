@@ -461,6 +461,20 @@
         "basis",
         "fx"
       ]
+    },
+    {
+      "timestamp": "2026-06-04 12:40",
+      "question": "[Daily briefing generated: 2026-06-04]",
+      "answer": "# Macro Briefing \u2014 2026-06-04\n_Generated 08:36 AM ET on Thursday, June 04, 2026_\n\n## Market Summary\n\nUSD regime not yet classified \u2014 insufficient data.\n\nNo strong FX divergence signal from regime model.\n\nNo strong basis signal.\n\n## Central Bank Watch\n\n**Fed:**\n- No specific Fed news in today's data \u2014 check Bloomberg.\n\n**ECB:**\nThe ECB is in the early stages of easing. Front-end should lead the rally as near-term cuts get priced. The key risk is a shallow cycle \u2014 if cuts disappoint, belly cheapen",
+      "section": "daily_briefing",
+      "regime": "full_briefing",
+      "themes": [
+        "fed",
+        "ecb",
+        "curve",
+        "basis",
+        "fx"
+      ]
     }
   ],
   "patterns": {},
@@ -971,6 +985,6 @@
       }
     },
     "version": 2,
-    "last_saved": "2026-06-03 14:23"
+    "last_saved": "2026-06-04 12:40"
   }
 }

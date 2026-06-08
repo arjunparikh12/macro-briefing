@@ -489,6 +489,20 @@
         "basis",
         "fx"
       ]
+    },
+    {
+      "timestamp": "2026-06-08 14:00",
+      "question": "[Daily briefing generated: 2026-06-08]",
+      "answer": "# Macro Briefing \u2014 2026-06-08\n_Generated 09:57 AM ET on Monday, June 08, 2026_\n\n## Market Summary\n\nUSD regime not yet classified \u2014 insufficient data.\n\nNo strong FX divergence signal from regime model.\n\nNo strong basis signal.\n\n**Key levels (FRED):**\n- US CPI YoY: 332.407 % YoY (as of 2026-04-01)\n- US CPI YoY: 332.407 % YoY (as of 2026-04-01)\n\n## Central Bank Watch\n\n**Fed:**\n- No specific Fed news in today's data \u2014 check Bloomberg.\n\n**ECB:**\nThe ECB is in the early stages of easing. Front-end sho",
+      "section": "daily_briefing",
+      "regime": "full_briefing",
+      "themes": [
+        "fed",
+        "ecb",
+        "curve",
+        "basis",
+        "fx"
+      ]
     }
   ],
   "patterns": {},
@@ -999,6 +1013,6 @@
       }
     },
     "version": 2,
-    "last_saved": "2026-06-05 12:33"
+    "last_saved": "2026-06-08 14:00"
   }
 }

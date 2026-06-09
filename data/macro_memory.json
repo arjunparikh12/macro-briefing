@@ -503,6 +503,20 @@
         "basis",
         "fx"
       ]
+    },
+    {
+      "timestamp": "2026-06-09 12:32",
+      "question": "[Daily briefing generated: 2026-06-09]",
+      "answer": "# Macro Briefing \u2014 2026-06-09\n_Generated 08:29 AM ET on Tuesday, June 09, 2026_\n\n## Market Summary\n\nUSD regime not yet classified \u2014 insufficient data. - ICE BofA US Corp OAS: 0.74 bp (as of 2026-06-05) - ICE BofA US Corp OAS: 0.74 bp (as of 2026-06-05)\n\nNo strong FX divergence signal from regime model.\n\nNo strong basis signal.\n\n**Key levels (FRED):**\n- ICE BofA US Corp OAS: 0.74 bp (as of 2026-06-05)\n- ICE BofA US Corp OAS: 0.74 bp (as of 2026-06-05)\n\n## Central Bank Watch\n\n**Fed:**\n- No specifi",
+      "section": "daily_briefing",
+      "regime": "full_briefing",
+      "themes": [
+        "fed",
+        "ecb",
+        "curve",
+        "basis",
+        "fx"
+      ]
     }
   ],
   "patterns": {},
@@ -1013,6 +1027,6 @@
       }
     },
     "version": 2,
-    "last_saved": "2026-06-08 14:00"
+    "last_saved": "2026-06-09 12:32"
   }
 }

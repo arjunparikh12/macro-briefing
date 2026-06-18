@@ -32,6 +32,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import briefing as briefing_module
+import briefing_validator
 
 REPO_ROOT     = Path(__file__).parent
 DOCS_DATA_DIR = REPO_ROOT / "docs" / "data"
@@ -171,6 +172,18 @@ def main() -> int:
     if not markdown or len(markdown) < 200:
         print(f"[generate] ERROR: briefing too short ({len(markdown) if markdown else 0} chars)")
         return 1
+
+    # ── Post-generation validator gate ────────────────────────────────────
+    # Refuses to write the briefing JSON if any banned phrase or unit-format
+    # bug slipped through. See briefing_validator.py for the checks.
+    ok, errors = briefing_validator.validate(markdown)
+    if not ok:
+        print(f"[validator] FAILED with {len(errors)} error(s):")
+        for e in errors:
+            print(f"  - {e}")
+        print("[generate] Refusing to write briefing JSON. Fix violations and re-run.")
+        return 2
+    print(f"[validator] OK ({len(markdown)} chars, no banned phrases / unit bugs)")
 
     doc = build_briefing_doc(today, markdown)
 

@@ -10,3 +10,6 @@ data/.paused
 
 # Local-dev briefing markdowns (the canonical artefacts now live in docs/data/).
 data/briefings/
+
+# Multi-agent rebuild coordination workspace (specs / reviews / logs — not product).
+.research-workspace/

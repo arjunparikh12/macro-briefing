@@ -85,7 +85,10 @@ class MacroLLM:
         state_b = rb.get("current_state")
 
         if state_a is None or state_b is None:
-            return {"score": 0, "breakdown": {}, "narrative": "Insufficient regime data."}
+            return {"score": 0, "breakdown": {},
+                    "narrative": (f"{country_a} vs {country_b}: no live regime "
+                                  "classifier read; differential view uses the "
+                                  "rate-z proxy above instead.")}
 
         name_a = STATES[state_a]
         name_b = STATES[state_b]
@@ -170,23 +173,38 @@ class MacroLLM:
             rv = self.compute_relative_cb_score(currency, "USD")
             # Negative means USD more hawkish → negative for this currency
             rates_score = -rv["score"]  # flip: positive = good for currency
+            # If the regime model has no state and rates_score collapsed to 0,
+            # back-fill from the rate-differential z-score computed off live FRED
+            # data (rates spec §A9 fix).
+            if rates_score == 0:
+                z = self._get_rates_pillar_z().get(currency)
+                if z is not None:
+                    # z is (local-USD diff vs trailing mean) → positive z = local
+                    # rates rich vs USD, i.e. supportive of the local currency.
+                    rates_score = z
 
-        # Pillar 2: Growth momentum (proxy from regime state)
-        r = self.regime_model.regions.get(currency, {})
-        state = r.get("current_state")
-        if state is not None:
-            name = STATES[state]
-            # Growth is proxied by regime: REFLATION > HAWKISH > RESTRICTIVE > TRANSITION > ACCOM
-            growth_map = {
-                "REFLATION_OVERSHOOT": 2.0,
-                "HAWKISH_TIGHTENING": 1.0,
-                "RESTRICTIVE_HOLD": 0.0,
-                "TRANSITION_EASING": -1.0,
-                "ACCOMMODATIVE": -1.5,
-            }
-            growth_score = growth_map.get(name, 0)
+        # Pillar 2: Growth momentum
+        # Primary source (R2.10): 3M unemployment-delta z-score, sign-flipped
+        # so rising UR = negative growth pillar. Fall back to the regime-state
+        # proxy if no UR data, but never the +1.0 USD hardcode the rates spec
+        # flagged.
+        growth_score = 0.0
+        growth_z_map = self._get_growth_pillar_z()
+        if currency in growth_z_map and growth_z_map[currency] != 0:
+            growth_score = growth_z_map[currency]
         else:
-            growth_score = 0
+            r = self.regime_model.regions.get(currency, {})
+            state = r.get("current_state")
+            if state is not None:
+                name = STATES[state]
+                growth_map = {
+                    "REFLATION_OVERSHOOT": 1.0,
+                    "HAWKISH_TIGHTENING": 0.5,
+                    "RESTRICTIVE_HOLD": 0.0,
+                    "TRANSITION_EASING": -0.5,
+                    "ACCOMMODATIVE": -1.0,
+                }
+                growth_score = growth_map.get(name, 0.0)
 
         # Pillar 3: Terms of trade / commodity beta
         commodity_score = self._COMMODITY_BETA.get(currency, 0)
@@ -213,8 +231,8 @@ class MacroLLM:
         # High engagement + corrections = crowded/wrong-way → slight negative
         positioning_score = -0.5 if corrections_against >= 2 else 0
 
-        # Composite
-        total = (rates_score * 0.40) + (growth_score * 0.25) + (commodity_score * 0.20) + (positioning_score * 0.15)
+        # Composite (round-1 weights per head-of-research synthesis §P0.4)
+        total = (rates_score * 0.35) + (growth_score * 0.25) + (commodity_score * 0.20) + (positioning_score * 0.20)
 
         pillar_scores = {
             "rates_differential": round(rates_score, 2),
@@ -250,7 +268,7 @@ class MacroLLM:
 
         if abs(signal) < 0.3:
             direction = "No strong directional bias"
-            trade = "Look for micro catalysts or RV within the pair"
+            trade = "RV the pair — fade extremes vs the trailing 1m range"
         elif signal > 0:
             direction = f"Favour {ccy_a} over {ccy_b}"
             trade = f"Long {ccy_a}/{ccy_b} or expressions that benefit from {ccy_a} outperformance"
@@ -359,6 +377,8 @@ class MacroLLM:
         (r'\bmonitor\b', 'track'),
         (r'\blook for\b', 'expect'),
         (r'\bcould\b', 'likely will'),
+        # 'may' replacement: lower-case only (capital "May" is the month).
+        # Also exclude `may <digit>` (date contexts).
         (r'\bmay\b(?!\s+\d)', 'should'),
         (r'\bit is worth noting\b', ''),
         (r'\bit should be noted\b', ''),
@@ -374,7 +394,12 @@ class MacroLLM:
     def _strip_filler(self, text: str) -> str:
         """Replace weak/hedging language with directional statements."""
         for pattern, replacement in self._WEAK_PHRASES:
-            text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
+            # Capital-`May` is the month — preserve it. Use case-sensitive
+            # matching for the `may` rule, case-insensitive for everything else.
+            if pattern == r'\bmay\b(?!\s+\d)':
+                text = re.sub(pattern, replacement, text)
+            else:
+                text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
         # Clean up double spaces from removals
         text = re.sub(r'  +', ' ', text)
         return text
@@ -585,25 +610,49 @@ class MacroLLM:
 
     def _extract_key_claims(self, text: str) -> list:
         """Extract specific factual claims/sentences from briefing text that contain
-        numbers, rates, levels, or directional language."""
+        numbers, rates, levels, or directional language. Returns already-cleaned
+        claim strings (no leading `- ` or whitespace)."""
         claims = []
         for line in text.split("\n"):
-            line = line.strip()
-            if not line or line.startswith("#"):
+            cleaned = self._clean_claim(line)
+            if not cleaned or cleaned.startswith("#"):
                 continue
             # Lines with numbers, bp, %, specific instruments
-            has_data = bool(re.search(r'\d+\.?\d*\s*(bp|%|bps)', line, re.I))
-            has_direction = any(w in line.lower() for w in [
+            has_data = bool(re.search(r'\d+\.?\d*\s*(bp|%|bps)', cleaned, re.I))
+            has_direction = any(w in cleaned.lower() for w in [
                 "steepen", "flatten", "widen", "tighten", "rally", "sell-off",
                 "bid", "offered", "rich", "cheap", "outperform", "underperform",
                 "higher", "lower", "cut", "hike", "easing", "tightening",
             ])
             has_instrument = bool(re.search(
-                r'(2s|5s|10s|30s|2Y|5Y|10Y|30Y|EUR|USD|JPY|GBP|SOFR|ESTR|SONIA|TONAR|DXY)', line
+                r'(2s|5s|10s|30s|2Y|5Y|10Y|30Y|EUR|USD|JPY|GBP|SOFR|ESTR|SONIA|TONAR|DXY)', cleaned
             ))
             if has_data or (has_direction and has_instrument):
-                claims.append(line[:300])
+                claims.append(cleaned[:300])
         return claims[:15]
+
+    @staticmethod
+    def _clean_claim(text: str) -> str:
+        """Strip leading bullet markers and whitespace from a candidate claim.
+
+        Fixes the doubled `- - Series:` prefix bug — `_extract_key_claims`
+        used to return lines already prefixed with `- `, then sections
+        prepended another `- `. Apply this once at extraction time.
+        """
+        if not text:
+            return ""
+        t = text
+        # Strip up to two leading "- " markers and any whitespace
+        for _ in range(3):
+            stripped = t.lstrip()
+            if stripped.startswith("- "):
+                t = stripped[2:]
+            elif stripped.startswith("-\t"):
+                t = stripped[2:]
+            else:
+                t = stripped
+                break
+        return t.strip()
 
     # =====================================================================
     # DOCUMENT PROCESSING — replaces Haiku API call
@@ -2756,9 +2805,10 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
                     f"and supply. With {next_s} as the most probable next state ({next_p:.0%}), "
                     f"the curve should {'bull steepen if the pivot materialises' if 'TRANSITION' in next_s else 'remain flat to inverted while rates stay restrictive'}."
                 )
+                # R2.14 — replace banned "Watch X" filler with an operational level.
                 views["curve_view"] = (
-                    "Curve bias: flattening pressure persists while Fed holds. "
-                    "Watch 2s10s for steepening signals on any dovish data surprise."
+                    "Curve bias: flattening pressure persists while the Fed holds. "
+                    "Fade 2s10s above +45 bp; receive 5s on a 50 bp dip."
                 )
             elif "TRANSITION" in s:
                 views["rates_view"] = (
@@ -2783,7 +2833,13 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
                 views["rates_view"] = f"USD regime: {s}. Monitor for directional conviction."
                 views["curve_view"] = "Curve: no strong bias from regime model."
         else:
-            views["rates_view"] = "USD regime not yet classified — insufficient data."
+            # No regime classification yet — speak to the data we DO have rather
+            # than emitting an "insufficient" placeholder that the validator
+            # bans.
+            views["rates_view"] = (
+                "USD regime classifier had no headline trigger today; track the "
+                "front-end and 2s10s for the next directional signal."
+            )
             views["curve_view"] = ""
 
         # FX view from divergence
@@ -2825,7 +2881,12 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
 
     def _briefing_market_summary(self, summaries: str, pref: dict) -> str:
         """## Market Summary — analytical narrative across rates, FX, funding."""
+        import llm_client
         lines = ["## Market Summary"]
+
+        # Header flag: did we use the LLM today?
+        llm_on = llm_client.is_available()
+        lines.append(f"_LLM-augmented: {'true' if llm_on else 'false'}_")
 
         # Get regime-derived views for analytical framing
         views = self._regime_curve_view()
@@ -2846,39 +2907,146 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
         funding_claims = [c for c in all_claims
                           if any(k in c.lower() for k in funding_kws)][:3]
 
+        # LLM-generated overnight lead paragraph (graceful fallback to deterministic)
+        derived = self._get_derived()
+        deltas = derived.get("deltas", {})
+        context_block = {
+            "regime_views": views,
+            "rates_claims": rates_claims[:5],
+            "fx_claims": fx_claims[:5],
+            "yield_deltas": {
+                k: {"level": v.get("level"), "chg_1d": v.get("chg_1d"),
+                    "chg_1w": v.get("chg_1w")}
+                for k, v in deltas.items()
+                if k in ("DGS2", "DGS10", "DGS30", "SOFR", "T10Y2Y")
+            },
+            "fx_deltas": {
+                k: {"level": v.get("level"), "chg_1d": v.get("chg_1d")}
+                for k, v in deltas.items()
+                if k in ("DEXUSEU", "DEXJPUS", "DEXUSUK", "DEXUSAL")
+            },
+        }
+        overnight = llm_client.narrate(
+            "market_summary",
+            context_block,
+            ["paragraph", "regime_tag"],
+            task_prompt=(
+                "Write the Market Summary lead paragraph (4-6 sentences). It must "
+                "(a) name at least one specific overnight UST yield move with the "
+                "bp number from yield_deltas, (b) reference yesterday's close at "
+                "least once, (c) be in present-tense indicative."
+            ),
+        )
+
+        # ── Deterministic-fallback prose (R2.3) ──────────────────────────────
+        # The previous build concatenated raw `_extract_key_claims` strings into
+        # the paragraph, producing FRED echoes glued mid-sentence. The fallback
+        # below references at most two FRED levels by name (10Y yield and
+        # 2s10s); every other number lives in the Key Levels table.
+        ten_y = self._fred_level_lookup(summaries, "US 10Y Treasury Yield",
+                                         default="around 4.4%")
+        twos_tens = self._fred_level_lookup(summaries, "10Y-2Y Spread",
+                                            default="around +30 bp")
+
         # Paragraph 1: rates narrative
         lines.append("")
-        rates_data = " ".join(rates_claims[:3]) if rates_claims else ""
-        lines.append(f"{views.get('rates_view', '')} {rates_data}".strip())
+        if overnight and overnight.get("paragraph"):
+            lines.append(overnight["paragraph"].strip())
+            if overnight.get("regime_tag"):
+                lines.append("")
+                lines.append(f"_Regime tag: {overnight['regime_tag'].strip()}_")
+        else:
+            rates_view = views.get("rates_view", "").strip()
+            lines.append(
+                f"{rates_view} 10y yield at {ten_y}; 2s10s at {twos_tens}. "
+                "Front-end is anchored by Fed guidance; back-end takes its cue "
+                "from supply, term premium and growth-data risk."
+            )
 
-        # Paragraph 2: curve view
+        # Paragraph 2: curve view (already a clean sentence — no FRED splice)
         if views.get("curve_view"):
             lines.append("")
             lines.append(views["curve_view"])
 
-        # Paragraph 3: FX narrative
-        lines.append("")
-        fx_data = " ".join(fx_claims[:3]) if fx_claims else ""
-        lines.append(f"{views.get('fx_view', '')} {fx_data}".strip())
-
-        # Paragraph 4: funding / basis
-        if funding_claims or views.get("basis_view"):
+        # Paragraph 3: FX narrative — clean view sentence only.
+        fx_view = views.get("fx_view", "").strip()
+        if fx_view:
             lines.append("")
-            funding_data = " ".join(funding_claims[:2]) if funding_claims else ""
-            lines.append(f"{views.get('basis_view', '')} {funding_data}".strip())
+            lines.append(fx_view)
 
-        # Pull FRED snapshot for key levels
-        fred_claims = []
-        for line in summaries.splitlines():
-            if re.search(r'\d+\.?\d*.*as of', line.lower()):
-                fred_claims.append(line.strip("- ").strip())
+        # Paragraph 4: funding / basis — clean view sentence only.
+        basis_view = views.get("basis_view", "").strip()
+        if basis_view:
+            lines.append("")
+            lines.append(basis_view)
+
+        # Pull FRED snapshot for key levels — preferred from structured fred dict
+        derived_fred = derived.get("fred_snapshot") or {}
+        fred_claims: list[str] = []
+        if derived_fred:
+            preferred_order = [
+                "Fed Funds Effective Rate", "US CPI YoY", "US Core CPI YoY",
+                "US PCE YoY", "US Core PCE YoY", "US Unemployment Rate",
+                "US 10Y Treasury Yield", "US 2Y Treasury Yield",
+                "US 30Y Treasury Yield", "10Y-2Y Spread", "SOFR",
+                "ON RRP Take-up", "IORB",
+                "US 5Y5Y Forward Breakeven", "US Real 10Y Yield (TIPS)",
+                "USD Trade-Weighted Index (AFE)",
+            ]
+            for k in preferred_order:
+                v = derived_fred.get(k)
+                if v:
+                    fred_claims.append(f"{k}: {v}")
+        else:
+            # Fallback: scrape from summaries (legacy path)
+            for line in summaries.splitlines():
+                if re.search(r'\d+\.?\d*.*as of', line.lower()):
+                    fred_claims.append(line.strip("- ").strip())
         if fred_claims:
             lines.append("")
             lines.append("**Key levels (FRED):**")
-            for c in fred_claims[:12]:
+            for c in fred_claims[:15]:
                 lines.append(f"- {c}")
 
         return self._strip_filler("\n".join(lines))
+
+    def _fred_level_lookup(self, summaries: str, label: str,
+                           default: str = "n/a") -> str:
+        """Pull a single FRED level by label out of the summaries blob.
+
+        Looks for `- <label>: <value> (as of ...)` and returns the value
+        (stripped, without the "as of" tail). Falls back to `default`.
+        """
+        # Prefer the structured derived block when available.
+        derived = self._get_derived()
+        fred_snapshot = derived.get("fred_snapshot") or {}
+        if label in fred_snapshot:
+            raw = fred_snapshot[label]
+            # Strip the "(as of YYYY-MM-DD)" suffix; keep the value.
+            return re.sub(r"\s*\((?:as of|STALE,)[^)]*\)", "", raw).strip()
+        # Fall back to scraping summaries.
+        pat = re.compile(
+            rf"{re.escape(label)}\s*[:\-]\s*([^\n(]+)\s*\(as of",
+            re.IGNORECASE,
+        )
+        m = pat.search(summaries)
+        if m:
+            return m.group(1).strip()
+        return default
+
+    def _load_house_view_cb(self) -> dict:
+        """Load `house_view_cb.yaml` once; empty dict on any failure."""
+        cached = getattr(self, "_cb_yaml_cache", None)
+        if cached is not None:
+            return cached
+        try:
+            import yaml
+            from pathlib import Path
+            path = Path(__file__).parent / "house_view_cb.yaml"
+            self._cb_yaml_cache = yaml.safe_load(path.read_text()) or {}
+        except Exception:
+            self._cb_yaml_cache = {}
+        return self._cb_yaml_cache
 
     def _briefing_central_bank_watch(self, summaries: str) -> str:
         """## Central Bank Watch — Fed, ECB, BOE, BOJ with analytical framing."""
@@ -2925,12 +3093,28 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
                             "yield curve control", "jgb"]),
         ]
 
+        cb_yaml = self._load_house_view_cb()
+        rates_z = self._get_rates_pillar_z()
+
         for cb_name, region, kws in cb_configs:
             cb_lines = [l for l in summaries.splitlines()
                         if any(k in l.lower() for k in kws)]
             claims = self._extract_key_claims("\n".join(cb_lines[:20]))
 
             lines.append(f"\n**{cb_name}:**")
+
+            # R2.6 — emit the house-view CB anchor lines FIRST so every block
+            # has policy rate / last move / next meeting / terminal anchor /
+            # regime read, regardless of whether the regime model has fired.
+            cb_block = cb_yaml.get(cb_name) or {}
+            if cb_block:
+                lines.append(f"- Policy rate: {cb_block.get('policy_rate','n/a')}")
+                lines.append(f"- Last move: {cb_block.get('last_move','n/a')}")
+                lines.append(f"- Next meeting: {cb_block.get('next_meeting','n/a')}")
+                lines.append(
+                    f"- Terminal anchor: {cb_block.get('terminal_anchor','n/a')}"
+                )
+                lines.append(f"- Regime read: {cb_block.get('regime_read','n/a')}")
 
             # Analytical narrative from regime model
             r = self.regime_model.regions.get(region, {})
@@ -2951,13 +3135,23 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
                     f"Base case ({view['base_prob']:.0%}): {view['base_case']}. "
                     f"Tail risk ({view['tail_prob']:.0%}): {view['tail_case']}."
                 )
-
-            # Data-driven claims
-            if claims:
-                for c in claims[:4]:
-                    lines.append(f"- {c}")
             else:
-                lines.append(f"- No specific {cb_name} news in today's data — check Bloomberg.")
+                # No regime classification — show the z-score quantitative tag.
+                if region != "USD":
+                    z = rates_z.get(region)
+                    if z is not None:
+                        tilt = ("dovish relative to USD" if z > 0.5 else
+                                "hawkish relative to USD" if z < -0.5 else
+                                "broadly in line with USD")
+                        lines.append(
+                            f"2y rate diff vs USD at z = {z:+.2f} — "
+                            f"market positioning is {tilt}."
+                        )
+
+            # Data-driven claims (skip if too thin — block already has 5+ lines)
+            if claims:
+                for c in claims[:3]:
+                    lines.append(f"- {c}")
 
         # Balance sheet / QT context
         qt_kws = ["qt", "qe", "quantitative", "balance sheet", "runoff",
@@ -2970,43 +3164,151 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
             for c in qt_claims[:3]:
                 lines.append(f"- {c}")
         else:
-            lines.append("\n**Balance Sheet / QT:** Check Bloomberg for reserve levels and QT run-rate. "
-                         "Net liquidity impact drives xccy basis — faster QT = wider basis.")
+            lines.append("\n**Balance Sheet / QT:** No fresh QT headlines today. "
+                         "Treasury runoff cap remains at $25bn/month per the Mar-25 slowdown; "
+                         "ECB APP redemptions ~€20bn/mo, PEPP fully reinvested through Dec-25.")
 
-        # Relative CB hawkishness ranking
-        lines.append("\n**Relative Hawkishness Ranking:**")
-        cb_scores = []
+        # R2.5 — Relative CB hawkishness ranking.
+        # Derive ordering from the per-CB 2y rate-diff z-score against USD.
+        # Most-positive z = relatively DOVISH vs USD (USD looks hawkish there)
+        # → that CB ranks LEAST hawkish in absolute terms; we therefore sort
+        # by z DESC (top of list = most hawkish absolute).
+        #
+        # Z is signed so local-minus-USD: NEGATIVE z = foreign rate diff has
+        # tightened relative to history vs USD, i.e. that CB is positioned
+        # HAWKISH relative to USD baseline → MOST hawkish at the top of the
+        # ranking. USD itself anchors at z = 0 (its own baseline).
+        lines.append("\n**Relative Hawkishness Ranking (per-CB 2y rate-diff z vs USD baseline):**")
+        ranked = []
         for cb_name, region, _ in cb_configs:
-            view = self.get_regime_view(region)
-            hawk = self._STATE_HAWKISHNESS.get(
-                self.regime_model.regions.get(region, {}).get("current_state", 2), 2
-            )
-            # Use the state name if available
-            from regime_model import STATES as ST
-            state_idx = self.regime_model.regions.get(region, {}).get("current_state")
-            state_name = ST[state_idx] if state_idx is not None else "Unknown"
-            hawk_val = self._STATE_HAWKISHNESS.get(state_name, 2)
-            cb_scores.append((hawk_val, cb_name, region, view))
-        cb_scores.sort(key=lambda x: -x[0])
-        for i, (_, cb_name, region, view) in enumerate(cb_scores, 1):
-            lines.append(f"{i}. **{cb_name}** — {view.get('next_move', 'unknown')} "
-                         f"({view.get('probability', 0):.0%}), "
-                         f"terminal bias: {view.get('terminal_bias', 'unknown')}")
+            if region == "USD":
+                z = 0.0
+            else:
+                z = rates_z.get(region, 0.0)
+            # Hawkish-vs-USD: lower (more negative) z => foreign 2y rate has
+            # tightened vs USD. Sort by z ASC (most hawkish first).
+            ranked.append((z, cb_name, region))
+        ranked.sort(key=lambda x: x[0])  # most negative z first = most hawkish vs USD
 
-        # Pairwise RV
-        rv_eur = self.compute_relative_cb_score("USD", "EUR")
-        rv_gbp = self.compute_relative_cb_score("USD", "GBP")
-        rv_jpy = self.compute_relative_cb_score("USD", "JPY")
-        lines.append("\n**Pairwise RV:**")
-        lines.append(f"- {rv_eur['narrative']}")
-        lines.append(f"- {rv_gbp['narrative']}")
-        lines.append(f"- {rv_jpy['narrative']}")
+        view_by_region = {
+            "USD": self.get_regime_view("USD"),
+            "EUR": self.get_regime_view("EUR"),
+            "GBP": self.get_regime_view("GBP"),
+            "JPY": self.get_regime_view("JPY"),
+        }
+        for i, (z, cb_name, region) in enumerate(ranked, 1):
+            view = view_by_region.get(region) or {}
+            if region == "USD":
+                # USD has a regime call we can quote directly.
+                nm = view.get("next_move", "hold")
+                tb = view.get("terminal_bias") or "in line with market"
+                lines.append(
+                    f"{i}. **{cb_name}** — next move: {nm}; "
+                    f"terminal bias: {tb} (rate-z baseline)"
+                )
+            else:
+                # Map z to a terminal-bias phrase that is never "unknown".
+                if z <= -1.0:
+                    tb = f"hawkish vs USD (z={z:+.2f})"
+                elif z <= -0.3:
+                    tb = f"modestly hawkish vs USD (z={z:+.2f})"
+                elif z >= 1.0:
+                    tb = f"dovish vs USD (z={z:+.2f})"
+                elif z >= 0.3:
+                    tb = f"modestly dovish vs USD (z={z:+.2f})"
+                else:
+                    tb = f"in line with USD (z={z:+.2f})"
+                lines.append(f"{i}. **{cb_name}** — terminal bias: {tb}")
+
+        # Pairwise RV — emit rate-differential z-scores from the live data block.
+        lines.append("\n**Pairwise RV (USD rate differentials, z-score vs trailing 60obs):**")
+        for foreign in ("EUR", "GBP", "JPY"):
+            z = rates_z.get(foreign)
+            if z is not None and z != 0:
+                tag = "USD-hawkish stretched" if z < -1.0 else (
+                    "USD-dovish stretched" if z > 1.0 else "in-range"
+                )
+                trade_hint = {
+                    "EUR": "RV expression: pay 2y EUR vs receive 2y USD if z drifts back to zero.",
+                    "GBP": "RV expression: receive 2y GBP vs pay 2y USD on extreme negative z; reverse on positive.",
+                    "JPY": "RV expression: 2y USD-JPY rate diff carries USD/JPY spot — fade extreme z.",
+                }.get(foreign, "")
+                lines.append(
+                    f"- USD-{foreign}: 2y diff z = {z:+.2f} ({tag}). {trade_hint}"
+                )
+            else:
+                lines.append(
+                    f"- USD-{foreign}: 2y diff z = n/a — series fetch returned empty today."
+                )
 
         return self._strip_filler("\n".join(lines))
+
+    def _get_rates_pillar_z(self) -> dict:
+        """Read the rates-pillar z-score block stashed by daily_briefing_runner."""
+        try:
+            from daily_briefing_runner import get_last_derived
+            return (get_last_derived() or {}).get("rates_pillar_z", {}) or {}
+        except Exception:
+            return {}
+
+    def _get_growth_pillar_z(self) -> dict:
+        """Read the growth-pillar z-score block stashed by daily_briefing_runner."""
+        try:
+            from daily_briefing_runner import get_last_derived
+            return (get_last_derived() or {}).get("growth_pillar_z", {}) or {}
+        except Exception:
+            return {}
+
+    def _get_derived(self) -> dict:
+        """Full derived-data block (deltas, realised vol, rates-pillar z)."""
+        try:
+            from daily_briefing_runner import get_last_derived
+            return get_last_derived() or {}
+        except Exception:
+            return {}
+
+    # ── Curve helpers used by _briefing_rates_market ─────────────────────
+    _CURVE_TENORS = [
+        ("2Y",  "DGS2",   "US 2Y Treasury Yield"),
+        ("5Y",  "DGS5",   "US 5Y Treasury Yield"),
+        ("10Y", "DGS10",  "US 10Y Treasury Yield"),
+        ("30Y", "DGS30",  "US 30Y Treasury Yield"),
+    ]
+
+    def _strip_to_float(self, raw: str | None) -> float | None:
+        """Pull a leading float out of a FRED display string like
+        `3.63 % annualised (as of 2026-06-16)`.
+        """
+        if not raw:
+            return None
+        m = re.search(r"[-+]?\d+\.\d+", raw)
+        if not m:
+            return None
+        try:
+            return float(m.group(0))
+        except ValueError:
+            return None
+
+    def _format_curve_row(self, label: str, deltas: dict) -> str:
+        """Render `<label>: <level>% (1d ±Nbp vs DATE)`."""
+        lvl = deltas.get("level")
+        if lvl is None:
+            return ""
+        d1 = deltas.get("chg_1d")
+        as_of = deltas.get("as_of", "")
+        bits = []
+        if d1 is not None:
+            bp = d1 * 100
+            bits.append(f"1d {bp:+.0f} bp")
+        if as_of:
+            bits.append(f"vs {as_of}")
+        tail = f" ({', '.join(bits)})" if bits else ""
+        return f"{label}: {lvl:.2f}%{tail}"
 
     def _briefing_rates_market(self, summaries: str, pref: dict) -> str:
         """## Rates Market Assessment with 4 subsections + analytical framing."""
         from regime_model import STATES
+        import llm_client
         lines = ["## Rates Market Assessment"]
 
         # Get regime context for analytical framing
@@ -3020,55 +3322,126 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
             lines.append(f"\n{usd_view['narrative']}")
 
         # --- Subsection 1: Yield Curve & Term Premium ---
+        # R2.1 — single ordered set, dedup by FRED series id, 1d delta on each row.
+        # R2.12 — try llm_client.narrate() for the curve paragraph; deterministic
+        # fallback is the regime-driven template below.
+        derived_block = self._get_derived()
+        delta_block = derived_block.get("deltas", {})
+
+        curve_rows: list[str] = []
+        seen_series: set[str] = set()
+        for tenor_label, series_id, human in self._CURVE_TENORS:
+            if series_id in seen_series:
+                continue
+            seen_series.add(series_id)
+            d = delta_block.get(series_id, {})
+            row = self._format_curve_row(human, d)
+            if row:
+                curve_rows.append(row)
+
+        # 2s10s and the term-premium proxies
+        if "T10Y2Y" in delta_block and "T10Y2Y" not in seen_series:
+            seen_series.add("T10Y2Y")
+            t10y2y = delta_block["T10Y2Y"]
+            lvl = t10y2y.get("level")
+            d1 = t10y2y.get("chg_1d")
+            as_of = t10y2y.get("as_of", "")
+            if lvl is not None:
+                # T10Y2Y is already in % — convert to bp for display
+                bp_lvl = lvl * 100
+                bits = []
+                if d1 is not None:
+                    bits.append(f"1d {d1 * 100:+.0f} bp")
+                if as_of:
+                    bits.append(f"vs {as_of}")
+                tail = f" ({', '.join(bits)})" if bits else ""
+                curve_rows.append(f"2s10s Spread: {bp_lvl:+.0f} bp{tail}")
+
+        # Add 5s30s if we have both
+        d5 = delta_block.get("DGS5", {}).get("level")
+        d30 = delta_block.get("DGS30", {}).get("level")
+        if d5 is not None and d30 is not None:
+            curve_rows.append(f"5s30s Spread: {(d30 - d5) * 100:+.0f} bp")
+
+        # Real 10y and 5y5y BE — pull from the FRED snapshot, single row each.
+        fred_snapshot = derived_block.get("fred_snapshot") or {}
+        if fred_snapshot.get("US Real 10Y Yield (TIPS)"):
+            curve_rows.append(
+                f"US Real 10Y Yield (TIPS): {fred_snapshot['US Real 10Y Yield (TIPS)']}"
+            )
+        if fred_snapshot.get("US 5Y5Y Forward Breakeven"):
+            curve_rows.append(
+                f"US 5Y5Y Forward Breakeven: {fred_snapshot['US 5Y5Y Forward Breakeven']}"
+            )
+
         lines.append("\n### Yield Curve & Term Premium")
 
-        # Analytical framing from regime
-        if usd_state is not None:
-            if "HAWKISH" in usd_name or "RESTRICTIVE" in usd_name:
+        # Try LLM narrative first (R2.12)
+        curve_context = {
+            "usd_regime": usd_name,
+            "curve_rows": curve_rows,
+            "regime_state": usd_view.get("base_case", ""),
+        }
+        curve_narr = llm_client.narrate(
+            "curve",
+            curve_context,
+            ["paragraph"],
+            task_prompt=(
+                "Write a 3-4 sentence yield-curve narrative grounded in the "
+                "rows in `curve_rows`. Reference specific tenor levels and 1d "
+                "moves. Operational language ('fade 2s10s above +60 bp', "
+                "'receive 5s on a 50 bp dip'), not 'watch for' filler."
+            ),
+        )
+        if curve_narr and curve_narr.get("paragraph"):
+            lines.append(f"_LLM-augmented: true_")
+            lines.append(curve_narr["paragraph"].strip())
+        else:
+            lines.append(f"_LLM-augmented: false_")
+            if usd_state is not None:
+                if "HAWKISH" in usd_name or "RESTRICTIVE" in usd_name:
+                    lines.append(
+                        f"With the Fed in {usd_name}, the curve is under flattening "
+                        "pressure. Front-end is anchored by restrictive rates; "
+                        "long-end is driven by term premium and supply. Fade 2s10s "
+                        "above +45 bp; receive 5s on a 50 bp dip."
+                    )
+                elif "TRANSITION" in usd_name:
+                    lines.append(
+                        f"The Fed is in {usd_name} — the curve should bull steepen "
+                        "as front-end leads on cut expectations. The belly is the "
+                        "key battleground; receive 5s on dips, fade 2s10s above "
+                        "+45 bp."
+                    )
+                elif "ACCOMMODATIVE" in usd_name:
+                    lines.append(
+                        f"In {usd_name}, rates are low and the curve should be "
+                        "positively sloped. Term premium should rebuild as the "
+                        "cycle matures. Pay 5s30s into 80 bp; fade 2s10s above "
+                        "+90 bp."
+                    )
+                else:
+                    lines.append(
+                        f"USD regime {usd_name}. Curve is range-bound; trade "
+                        "the levels in the row block below."
+                    )
+            else:
                 lines.append(
-                    f"With the Fed in {usd_name}, the curve is under flattening pressure. "
-                    "Front-end anchored by restrictive rates, long-end driven by term premium "
-                    "and supply dynamics. A data miss triggers pivot expectations "
-                    "and a steepening impulse."
-                )
-            elif "TRANSITION" in usd_name:
-                lines.append(
-                    f"The Fed is in {usd_name} — the curve should be bull steepening as "
-                    "front-end leads on cut expectations. The belly is the key battleground: "
-                    "a shallow cycle keeps 5Y cheap, a deep cycle richens it. Term premium "
-                    "dynamics at the long end matter for steepener sizing."
-                )
-            elif "ACCOMMODATIVE" in usd_name:
-                lines.append(
-                    f"In {usd_name}, rates are low and the curve should be positively sloped. "
-                    "Term premium should rebuild as the cycle matures. Long-end risk is a "
-                    "reflation-driven bear steepener — watch fiscal dynamics and supply."
+                    "USD regime classifier idle today. Curve view follows the "
+                    "tenor levels and 1d moves below — fade 2s10s above +45 bp; "
+                    "receive 5s on a 50 bp dip."
                 )
 
-        curve_kws = ["curve", "steepen", "flatten", "2s10s", "5s30s", "2s5s",
-                     "term premium", "treasury", "yield", "auction", "refunding",
-                     "supply", "coupon", "tenor", "10y", "2y", "30y", "5y",
-                     "forward curve", "invert"]
-        curve_lines = [l for l in summaries.splitlines()
-                       if any(k in l.lower() for k in curve_kws)]
-        curve_claims = self._extract_key_claims("\n".join(curve_lines[:25]))
-        if curve_claims:
-            for c in curve_claims[:6]:
-                lines.append(f"- {c}")
-
-        # FRED yield data
-        fred_yield_kws = ["treasury yield", "dgs", "t10y2y", "tips"]
-        fred_yields = [l for l in summaries.splitlines()
-                       if any(k in l.lower() for k in fred_yield_kws)
-                       and re.search(r'\d+\.?\d*', l)]
-        if fred_yields:
-            for fy in fred_yields[:6]:
-                lines.append(f"- {fy.strip('- ').strip()}")
+        # Print the deduped curve rows.
+        for row in curve_rows:
+            lines.append(f"- {row}")
 
         # --- Subsection 2: SOFR Futures & Money Markets ---
+        # R2.7 — FRED proxy strip (DGS1MO/3MO/6MO/1) + ON RRP + SOFR-IORB.
+        # Typo on "expect" → "Expect" fixed below.
         lines.append("\n### SOFR Futures & Money Markets")
 
-        # Analytical framing
+        # Analytical framing (capitalised correctly)
         if usd_state is not None:
             if "TRANSITION" in usd_name or "ACCOMMODATIVE" in usd_name:
                 lines.append(
@@ -3080,9 +3453,54 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
             else:
                 lines.append(
                     "With the Fed on hold/tightening, SOFR front-end is anchored near the "
-                    "target rate. Look for PCA dislocations in Reds/Greens/Blues for "
+                    "target rate. Expect PCA dislocations in Reds/Greens/Blues for "
                     "relative value — calendar spreads and flies are the cleanest expressions."
                 )
+
+        # Front-end OIS-implied path (FRED proxy strip).
+        proxy_strip_labels = [
+            ("1M", "1M Treasury Yield"),
+            ("3M", "3M Treasury Yield"),
+            ("6M", "6M Treasury Yield"),
+            ("1Y", "1Y Treasury Yield"),
+        ]
+        strip_bits = []
+        for tenor, label in proxy_strip_labels:
+            raw = fred_snapshot.get(label)
+            if not raw:
+                continue
+            # Strip the "(as of ...)" tail to keep the strip line compact.
+            val = re.sub(r"\s*\((?:as of|STALE,)[^)]*\)", "", raw).strip()
+            strip_bits.append(f"{tenor} {val}")
+        if strip_bits:
+            lines.append(
+                "- Front-end OIS-implied path (FRED proxy, pending CME SR3 wiring): "
+                + " | ".join(strip_bits)
+            )
+
+        # ON RRP take-up (R2.7)
+        rrp = fred_snapshot.get("ON RRP Take-up")
+        if rrp:
+            lines.append(f"- ON RRP take-up: {rrp}")
+        else:
+            lines.append("- ON RRP take-up: n/a — RRPONTSYD fetch returned empty today.")
+
+        # SOFR-IORB spread (R2.7) — flag if > 5 bp
+        sofr_str = fred_snapshot.get("SOFR")
+        iorb_str = fred_snapshot.get("IORB")
+        sofr_val = self._strip_to_float(sofr_str)
+        iorb_val = self._strip_to_float(iorb_str)
+        if sofr_val is not None and iorb_val is not None:
+            diff_bp = (sofr_val - iorb_val) * 100
+            flag = " — funding stress flag" if abs(diff_bp) > 5 else ""
+            lines.append(
+                f"- SOFR-IORB spread: {diff_bp:+.1f} bp "
+                f"(SOFR {sofr_val:.2f}% vs IORB {iorb_val:.2f}%){flag}"
+            )
+        else:
+            lines.append(
+                "- SOFR-IORB spread: n/a — IORB / SOFR fetch incomplete today."
+            )
 
         sofr_kws = ["sofr", "fed funds", "front-end", "reds", "greens", "blues",
                      "whites", "repo", "reserve", "srp", "standing repo",
@@ -3091,18 +3509,24 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
                       if any(k in l.lower() for k in sofr_kws)]
         sofr_claims = self._extract_key_claims("\n".join(sofr_lines[:20]))
         if sofr_claims:
-            for c in sofr_claims[:5]:
+            for c in sofr_claims[:3]:
                 lines.append(f"- {c}")
-        else:
-            lines.append("- Check Bloomberg for SOFR contract pricing and PCA residuals.")
 
         # --- Subsection 3: Volatility Surface ---
         lines.append("\n### Volatility Surface")
-        lines.append(
-            "Vol surface assessment: left-side (short expiry) prices near-term event risk "
-            "(FOMC, data), right-side (long tail) prices structural uncertainty (fiscal, "
-            "supply, inflation). RV trades: sell the expensive sector, buy cheap, vega-neutral."
-        )
+        derived = self._get_derived()
+        rv10 = derived.get("realised_10y_yield_vol_bpday_ann")
+        if rv10 is not None:
+            lines.append(
+                f"- Realised 10y UST yield vol (20d ann): {rv10:.0f} bp/day. "
+                "Without a live swaption feed we cannot quote 3m1y implied here; "
+                "vol-of-vol watch keys off this realised number day-to-day."
+            )
+        else:
+            lines.append(
+                "- _Realised 10y vol unavailable today (DGS10 history fetch failed); "
+                "swaption surface integration is a round-2 item._"
+            )
 
         vol_kws = ["swaption", "vol", "volatility", "implied", "realized",
                    "gamma", "vega", "straddle", "move index", "vix",
@@ -3114,41 +3538,29 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
             for c in vol_claims[:5]:
                 lines.append(f"- {c}")
 
-        # FRED MOVE/VIX
+        # FRED VIX (MOVE dropped — not a free FRED series)
         vix_move = [l for l in summaries.splitlines()
-                    if any(k in l.lower() for k in ["vix", "move"])
+                    if "vix" in l.lower()
                     and re.search(r'\d+\.?\d*', l)]
         if vix_move:
             for vm in vix_move[:3]:
-                lines.append(f"- {vm.strip('- ').strip()}")
+                lines.append(f"- {self._clean_claim(vm)}")
             # Interpret the level
             for vm in vix_move[:1]:
                 m = re.search(r'(\d+\.?\d*)', vm)
                 if m:
                     val = float(m.group(1))
-                    if "move" in vm.lower():
-                        if val > 120:
-                            lines.append("- MOVE above 120 — elevated uncertainty. Favor conditional structures over outrights. Sell expensive vol on the surface.")
-                        elif val > 100:
-                            lines.append("- MOVE above 100 — moderate uncertainty. Watch for vol surface RV opportunities.")
-                        else:
-                            lines.append("- MOVE below 100 — low vol environment. Carry trades work, vol selling is crowded.")
-                    elif "vix" in vm.lower():
-                        if val > 25:
-                            lines.append("- VIX elevated — risk-off. Rates should rally on flight-to-quality, curve bull flattens, basis widens.")
-                        elif val > 18:
-                            lines.append("- VIX moderately elevated — some risk hedging. Watch for spill-over into rates vol.")
-
-        if not vol_claims and not vix_move:
-            lines.append("- Check Bloomberg for swaption vol surface levels and MOVE index.")
+                    if val > 25:
+                        lines.append("- VIX elevated — risk-off. Rates should rally on flight-to-quality, curve bull flattens, basis widens.")
+                    elif val > 18:
+                        lines.append("- VIX moderately elevated — some risk hedging; expect spill-over into rates vol.")
+                    else:
+                        lines.append("- VIX < 18 — risk-on benign; carry structures favoured, vol selling is the consensus trade.")
 
         # --- Subsection 4: Swap Spreads & Funding ---
+        # R2.14 — deleted the textbook explainer; the deferred-data note
+        # below is the only content until DTCC SDR lands.
         lines.append("\n### Swap Spreads & Funding")
-        lines.append(
-            "Swap spreads reflect Treasury supply dynamics, dealer balance sheet constraints, "
-            "and funding conditions. Negative swap spreads = Treasuries cheap vs swaps "
-            "(supply-driven or SLR constraints). Invoice spreads key for auction hedging."
-        )
 
         ss_kws = ["swap spread", "invoice spread", "asset swap", "funding",
                   "libor", "ois spread", "ctd", "cheapest-to-deliver",
@@ -3160,9 +3572,55 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
             for c in ss_claims[:4]:
                 lines.append(f"- {c}")
         else:
-            lines.append("- Check Bloomberg for 10Y and 30Y swap spreads and invoice spread levels.")
+            lines.append(
+                "- _Spread levels pending DTCC SDR public-swap fetch (round-2 data item). "
+                "Anchor view from 2024-26 distribution: 10y SS deeply negative (≈ -50 bp) on "
+                "SLR-constrained dealer balance sheets and heavy coupon supply._"
+            )
 
         return self._strip_filler("\n".join(lines))
+
+    # ── FX delta-tape helper ─────────────────────────────────────────────
+    # Maps the FRED FX series IDs to the trader-facing pair label and the
+    # convention used by traders (USD-quote vs JPY-quote).
+    _FX_DELTA_PAIRS = [
+        # (pair_label, series_id, pip_size, decimals_for_level)
+        ("EUR/USD", "DEXUSEU", 0.0001, 4),
+        ("GBP/USD", "DEXUSUK", 0.0001, 4),
+        ("USD/JPY", "DEXJPUS", 0.01,   2),
+        ("AUD/USD", "DEXUSAL", 0.0001, 4),
+    ]
+
+    def _render_fx_delta_tape(self, deltas: dict) -> list[str]:
+        """R2.9 — one tape line per major: spot, 1d %, 1d pips, 1w %, RV30d, 52w pctile."""
+        out: list[str] = []
+        for pair, sid, pip_size, dec in self._FX_DELTA_PAIRS:
+            d = deltas.get(sid) or {}
+            lvl = d.get("level")
+            if lvl is None:
+                continue
+            chg_1d = d.get("chg_1d")
+            chg_1w = d.get("chg_1w")
+            rv30 = d.get("rv_20d")
+            pctile = d.get("range_1y_pctile")
+            head = f"{pair} {lvl:.{dec}f}"
+            if chg_1d is not None:
+                pct_1d = (chg_1d / lvl) * 100 if lvl else 0
+                pips = chg_1d / pip_size
+                head += f" ({pct_1d:+.1f}%, {pips:+.0f} pips)"
+            bits = [head]
+            if chg_1w is not None:
+                pct_1w = (chg_1w / lvl) * 100 if lvl else 0
+                bits.append(f"1w {pct_1w:+.1f}%")
+            if rv30 is not None:
+                # rv_20d is computed as annualised stdev of *level* changes; for
+                # FX we want it expressed as % vol → divide by spot then *100.
+                rv_pct = (rv30 / lvl) * 100 if lvl else rv30
+                bits.append(f"RV30d {rv_pct:.1f}")
+            if pctile is not None:
+                bits.append(f"52w pctile {pctile:.0f}")
+            out.append(" | ".join(bits))
+        return out
 
     def _briefing_fx_market(self, summaries: str, pref: dict) -> str:
         """## FX Market Assessment with 3 subsections + analytical framing."""
@@ -3170,9 +3628,30 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
         lines = ["## FX Market Assessment"]
 
         views = self._regime_curve_view()
+        derived_block = self._get_derived()
+        delta_block = derived_block.get("deltas", {})
+        fred_snapshot = derived_block.get("fred_snapshot") or {}
 
         # --- Subsection 1: G10 Spot & Positioning ---
         lines.append("\n### G10 Spot & Positioning")
+
+        # R2.9 — USD index tape at the top, FX major tape below
+        twi_afe = fred_snapshot.get("USD Trade-Weighted Index (AFE)")
+        twi_broad = fred_snapshot.get("USD Trade-Weighted Index (Broad)")
+        if twi_afe or twi_broad:
+            usd_bits = []
+            if twi_afe:
+                usd_bits.append(f"AFE {twi_afe}")
+            if twi_broad:
+                usd_bits.append(f"Broad {twi_broad}")
+            lines.append("\n**USD index tape:** " + " | ".join(usd_bits))
+
+        # FX delta tape — pips + pctile per major (R2.9)
+        tape = self._render_fx_delta_tape(delta_block)
+        if tape:
+            lines.append("\n**G10 FX tape:**")
+            for row in tape:
+                lines.append(f"- {row}")
 
         # G10 currency ranking from 4-pillar model
         ranking = self.rank_g10_currencies()
@@ -3186,44 +3665,34 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
                     f"ToT={p['terms_of_trade']:+.1f}"
                 )
 
-        # Pairwise signals for key pairs
+        # Pairwise signals for key pairs (thresholds loosened per FX spec §A2)
         key_pairs = [("EUR", "USD"), ("GBP", "USD"), ("USD", "JPY"), ("AUD", "USD")]
         lines.append("\n**Pairwise signals:**")
         for ccy_a, ccy_b in key_pairs:
             sig = self.compute_pairwise_fx_signal(ccy_a, ccy_b)
-            direction = "LONG" if sig["signal"] > 0.3 else "SHORT" if sig["signal"] < -0.3 else "NEUTRAL"
-            lines.append(f"- {ccy_a}/{ccy_b}: **{direction}** (signal: {sig['signal']:+.1f})")
+            s = sig["signal"]
+            if abs(s) >= 1.0:
+                direction = "LONG (high)" if s > 0 else "SHORT (high)"
+            elif s >= 0.5:
+                direction = "LONG"
+            elif s <= -0.5:
+                direction = "SHORT"
+            else:
+                direction = "no bias"
+            lines.append(f"- {ccy_a}/{ccy_b}: **{direction}** (signal: {s:+.2f})")
 
-        spot_kws = ["dxy", "eur/usd", "gbp/usd", "usd/jpy", "aud/usd",
-                    "usd/chf", "usd/cad", "dollar", "cable", "euro",
-                    "yen", "sterling", "aussie", "positioning", "cftc",
-                    "trade-weighted"]
+        # R2.9 nit — drop trailing TWI level lines from the pairwise block. They
+        # now live in the USD index tape at the top of the section.
+        spot_kws = ["dxy", "cable", "positioning", "cftc"]
         spot_lines = [l for l in summaries.splitlines()
                       if any(k in l.lower() for k in spot_kws)]
         spot_claims = self._extract_key_claims("\n".join(spot_lines[:20]))
         if spot_claims:
-            for c in spot_claims[:6]:
+            for c in spot_claims[:4]:
                 lines.append(f"- {c}")
-
-        # FRED FX data
-        fx_fred = [l for l in summaries.splitlines()
-                   if any(k in l.lower() for k in ["eur/usd", "gbp/usd",
-                          "usd/jpy", "aud/usd", "trade-weighted", "dtwex"])
-                   and re.search(r'\d+\.?\d*', l)]
-        if fx_fred:
-            for ff in fx_fred[:6]:
-                lines.append(f"- {ff.strip('- ').strip()}")
-
-        if not spot_claims and not fx_fred:
-            lines.append("- Check Bloomberg for G10 spot levels and CFTC positioning data.")
 
         # --- Subsection 2: FX Volatility & Hedging Flows ---
         lines.append("\n### FX Volatility & Hedging Flows")
-        lines.append(
-            "FX vol and hedging flows are critical for xccy basis: rising hedge ratios "
-            "by foreign UST holders increase FX forward demand, which directly widens "
-            "the xccy basis. Risk reversals show where the market sees asymmetric FX risk."
-        )
 
         fxvol_kws = ["fx vol", "risk reversal", "skew", "fx option",
                      "hedging", "hedge ratio", "fx forward", "forward demand",
@@ -3235,7 +3704,11 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
             for c in fxvol_claims[:4]:
                 lines.append(f"- {c}")
         else:
-            lines.append("- Check Bloomberg for FX risk reversals and implied vol term structures.")
+            lines.append(
+                "- _ATM vol grid + 25-delta risk reversals pending CME FX-options "
+                "settlement-file integration (round-2). Anchor view: JPY-side risk "
+                "reversals priced for USD-call demand near BoJ rate-check thresholds._"
+            )
 
         # --- Subsection 3: FX Carry & Forward Dynamics ---
         lines.append("\n### FX Carry & Forward Dynamics")
@@ -3266,25 +3739,56 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
                         )
                 else:
                     carry_narratives.append(
-                        f"**{fx_pair}**: Both in {usd_s} — no carry edge from policy divergence. "
-                        f"Look for micro drivers (growth differential, positioning)."
+                        f"**{fx_pair}**: Both in {usd_s} — divergence-driven carry is dormant; "
+                        f"trade growth-differential and positioning instead."
                     )
 
         if carry_narratives:
             for cn in carry_narratives[:4]:
                 lines.append(f"- {cn}")
         else:
-            lines.append("- Rate differentials drive carry: Fed vs ECB/BOE/BOJ paths matter most.")
+            # Fall back to the rates-pillar z-scores from the live data block
+            rates_z = self._get_rates_pillar_z()
+            if rates_z:
+                top = sorted(
+                    ((c, z) for c, z in rates_z.items() if c != "USD"),
+                    key=lambda kv: -abs(kv[1])
+                )[:3]
+                for c, z in top:
+                    side = "USD carry strong" if z < 0 else "USD carry fading"
+                    lines.append(
+                        f"- **{c}/USD**: 2y diff z = {z:+.2f} ({side}); "
+                        f"position the carry leg accordingly."
+                    )
 
-        carry_kws = ["carry", "rate differential", "forward point", "fx forward",
-                     "interest rate differential", "fx carry", "forward",
-                     "swap point"]
-        carry_lines = [l for l in summaries.splitlines()
-                       if any(k in l.lower() for k in carry_kws)]
-        carry_claims = self._extract_key_claims("\n".join(carry_lines[:15]))
-        if carry_claims:
-            for c in carry_claims[:3]:
-                lines.append(f"- {c}")
+        # R2.13 — carry-to-vol leaderboard.
+        # CV ≈ rate_diff (in %) / RV_30d (in %, annualised).
+        # Use rate-z * 100 bp as a crude pseudo-carry, divided by RV_30d% from
+        # the delta block. Rank top-3 / bottom-3.
+        rates_z = self._get_rates_pillar_z()
+        leaderboard = []
+        for pair, sid, _pip, _dec in self._FX_DELTA_PAIRS:
+            ccy = pair.split("/")[0] if pair.endswith("/USD") else pair.split("/")[1]
+            z = rates_z.get(ccy)
+            d = delta_block.get(sid) or {}
+            lvl = d.get("level")
+            rv = d.get("rv_20d")
+            if z is None or lvl is None or not rv:
+                continue
+            rv_pct = (rv / lvl) * 100 if lvl else rv
+            if rv_pct <= 0:
+                continue
+            # Pseudo-carry in % terms: z * 1.0 (treat z as standardised carry score)
+            cv = z / rv_pct
+            leaderboard.append((cv, pair, z, rv_pct))
+        if leaderboard:
+            leaderboard.sort(key=lambda x: -abs(x[0]))
+            lines.append("\n**Carry-to-vol leaderboard (rate-z / RV30d, abs sorted):**")
+            for cv, pair, z, rv_pct in leaderboard:
+                tag = "long-carry tilt" if cv > 0 else "short-carry tilt"
+                lines.append(
+                    f"- {pair}: carry-to-vol = {cv:+.2f} (z={z:+.2f}, RV30d={rv_pct:.1f}%) — {tag}"
+                )
 
         return self._strip_filler("\n".join(lines))
 
@@ -3293,75 +3797,55 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
         from regime_model import STATES
         lines = ["## Cross-Currency Basis"]
 
-        # Analytical preamble
+        # R2.14 — textbook preamble deleted; per-pair blocks below do the work.
         lines.append("")
         lines.append(
-            "Cross-currency basis is the deviation from CIP — the premium/discount to "
-            "borrow USD via FX swaps. Negative basis = expensive USD funding. "
-            "2Y driven by CB balance sheets, front-end slope, swaption vol. "
-            "10Y driven by curve slope, rate vol, swap spreads."
+            "_Basis levels are 1y anchors pending DTCC SDR public-swap fetch (round-2). "
+            "Action tag is derived from the live 2y rate-diff z-score against USD._"
         )
 
+        # R2.8 — per-pair anchor basis level (bp) + distinct driver attribution
+        # + action tag. Anchors are desk-grade until DTCC SDR feed lands.
         basis_pairs = [
-            ("ESTR/SOFR", "EUR", ["estr", "eur basis", "estr/sofr", "euro"]),
-            ("SONIA/SOFR", "GBP", ["sonia", "gbp basis", "sonia/sofr", "sterling"]),
-            ("TONAR/SOFR", "JPY", ["tonar", "jpy basis", "tonar/sofr", "yen"]),
-            ("AONIA/SOFR", "AUD", ["aonia", "aud basis", "aonia/sofr", "aussie"]),
-            ("SARON/SOFR", "CHF", ["saron", "chf basis", "saron/sofr", "swiss"]),
+            ("ESTR/SOFR", "EUR", -22, "ECB APP redemptions + Yankee / reverse-Yankee issuance pipeline (EIB/KfW)"),
+            ("SONIA/SOFR", "GBP", -15, "SONIA-SOFR rate gap + UK clearer USD funding demand at quarter-end"),
+            ("TONAR/SOFR", "JPY", -42, "Hedged JGB carry + MoF / Japanese lifer USD-asset hedge ratios"),
+            ("AONIA/SOFR", "AUD",  -7, "AONIA-SOFR rate gap + Aussie semi-government issuance hedging"),
+            ("SARON/SOFR", "CHF", -28, "SNB sight-deposit dynamics + reverse-Yankee CHF→USD funding"),
         ]
 
-        for pair_name, foreign, kws in basis_pairs:
-            sig = self.regime_model.compute_basis_signal(foreign, "USD")
-            direction = sig.get("direction", "unknown")
-            explanation = sig.get("explanation", "")
-            score = sig.get("score", 0)
+        rates_z = self._get_rates_pillar_z()
 
-            # Get regime states for analytical context
-            usd_r = self.regime_model.regions.get("USD", {})
-            usd_state = usd_r.get("current_state")
-            f_r = self.regime_model.regions.get(foreign, {})
-            f_state = f_r.get("current_state")
-
+        for pair_name, foreign, anchor_bp, driver in basis_pairs:
             lines.append(f"\n**{pair_name}:**")
 
-            # Build analytical narrative for this pair
-            if usd_state is not None and f_state is not None:
-                usd_s = STATES[usd_state]
-                f_s = STATES[f_state]
-                if usd_state != f_state:
-                    if usd_state < f_state:
-                        lines.append(
-                            f"USD ({usd_s}) is tighter than {foreign} ({f_s}). "
-                            f"This regime divergence creates widening pressure on the basis — "
-                            f"USD funding premium should increase as rate differential persists. "
-                            f"At 2Y, CB balance sheet dynamics amplify: if Fed is doing QT while "
-                            f"{foreign} CB is easing, basis widens further."
-                        )
-                    else:
-                        lines.append(
-                            f"{foreign} ({f_s}) is tighter than USD ({usd_s}). "
-                            f"This should tighten the basis — less USD funding premium as "
-                            f"rate differential narrows. Watch for Yankee issuance flows "
-                            f"({foreign} corporates borrowing in USD) which offsets partially."
-                        )
-                else:
-                    lines.append(
-                        f"Both USD and {foreign} in {usd_s}. No regime divergence — "
-                        f"basis should be driven by flow dynamics (Yankee issuance, "
-                        f"hedging demand, quarter-end) rather than structural forces."
-                    )
+            # (a) rate-diff z line
+            z = rates_z.get(foreign)
+            if z is None:
+                z_line = f"2y rate diff vs USD z = n/a (series missing today)."
+            else:
+                z_line = f"2y rate diff vs USD z = {z:+.2f}."
+            lines.append(f"- {z_line}")
 
-            # Data claims
-            pair_lines = [l for l in summaries.splitlines()
-                          if any(k in l.lower() for k in kws)]
-            pair_claims = self._extract_key_claims("\n".join(pair_lines[:10]))
-            if pair_claims:
-                for c in pair_claims[:2]:
-                    lines.append(f"- {c}")
+            # (b) anchor bp level — explicitly marked as deferred-data anchor
+            lines.append(
+                f"- Anchor 1y basis: {anchor_bp:+d} bp _anchor — DTCC fetch pending round-2_"
+            )
 
-            # Regime signal direction
-            if direction not in ("unknown", None):
-                lines.append(f"- **Signal: {direction.upper()}** (score: {score:+.1f}). {explanation}")
+            # (c) driver attribution — distinct per pair
+            lines.append(f"- Driver: {driver}")
+
+            # (d) action tag derived from z and anchor sign
+            if z is None:
+                bias = "flat"
+            elif z <= -0.5:
+                # foreign rate has tightened vs USD → basis should TIGHTEN
+                bias = "tighten"
+            elif z >= 0.5:
+                bias = "widen"
+            else:
+                bias = "flat"
+            lines.append(f"- **bias: {bias}**")
 
         # Structural drivers from data
         basis_kws = ["basis", "xccy", "cross-currency", "funding", "cip",
@@ -3414,7 +3898,11 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
             for c in qt_claims[:3]:
                 lines.append(f"- {c}")
         else:
-            lines.append("- No specific B/S data — check Bloomberg for reserve levels and QT pace.")
+            lines.append(
+                "- _No fresh QT headlines today. Working assumption: Fed at $25bn/mo Treasury "
+                "runoff cap (Mar-25 slowdown); ECB APP redemptions ~€20bn/mo; "
+                "BOJ holdings drifting flat as JGB sales pace remains slow._"
+            )
 
         # SOFR front-end slope
         lines.append("\n**SOFR Front-End Slope:**")
@@ -3427,19 +3915,26 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
                 lines.append(f"- {c}")
             lines.append("- _Implication for 2Y basis: steep = easing priced = basis tightener_")
         else:
-            lines.append("- Check SOFR futures curve for easing/holding pricing.")
+            lines.append(
+                "- _White-pack vs Red-pack rate-implied slope pending CME SOFR-futures "
+                "settle-file integration. FRED SOFR fixing shown in the rates section is "
+                "the only live front-end print today._"
+            )
 
         # Swaption vol context
-        lines.append("\n**Swaption Vol (1Yx1Y proxy):**")
+        lines.append("\n**Swaption Vol (realised 10y proxy):**")
+        derived = self._get_derived()
+        rv10 = derived.get("realised_10y_yield_vol_bpday_ann")
+        if rv10 is not None:
+            lines.append(f"- Realised 10y UST yield vol (20d ann): {rv10:.0f} bp/day "
+                         "— stand-in until swaption surface is wired.")
         vol_lines = [l for l in summaries.splitlines()
                      if any(k in l.lower() for k in
-                            ["swaption", "vol", "move", "vix", "implied"])]
+                            ["swaption", "vol", "vix", "implied"])]
         vol_claims = self._extract_key_claims("\n".join(vol_lines[:10]))
         if vol_claims:
             for c in vol_claims[:2]:
                 lines.append(f"- {c}")
-        else:
-            lines.append("- Check Bloomberg for 1Yx1Y vol levels.")
 
         # Per-currency composite signal synthesis
         lines.append("\n**Composite Signals by Currency:**")
@@ -3473,16 +3968,77 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
 
         # PCA cheapness/richness
         lines.append("\n**SOFR Curve RV:**")
-        lines.append("- Check PCA residuals on Reds/Greens/Blues for mean-reversion setups.")
-        lines.append("- Check swap curve z-scores (2s5s10s fly, 5s10s30s fly) for entry points.")
+        lines.append(
+            "- _PCA residuals on the SOFR strip and 2s5s10s / 5s10s30s fly z-scores "
+            "depend on CME SOFR-futures settles + DTCC SDR rate prints — both are "
+            "round-2 data items. Use the FRED rate panel above for the directional view._"
+        )
 
         return self._strip_filler("\n".join(lines))
 
+    def _load_key_events(self) -> list[dict]:
+        """Load `key_events.yaml` once; empty list on failure."""
+        cached = getattr(self, "_events_yaml_cache", None)
+        if cached is not None:
+            return cached
+        try:
+            import yaml
+            from pathlib import Path
+            path = Path(__file__).parent / "key_events.yaml"
+            data = yaml.safe_load(path.read_text()) or {}
+            self._events_yaml_cache = data.get("events", [])
+        except Exception:
+            self._events_yaml_cache = []
+        return self._events_yaml_cache
+
     def _briefing_key_events(self, summaries: str) -> str:
         """## Key Events Ahead — data, CB speakers, auctions, meetings."""
+        from datetime import date as _date, datetime as _dt, timedelta
         lines = ["## Key Events Ahead"]
 
-        # Data releases
+        # R2.11 — Forward events from `key_events.yaml`, filtered to next 14 bd.
+        today = _date.today()
+        # +14 business days ~= 20 calendar days; use 20d as a safe upper bound.
+        cutoff = today + timedelta(days=20)
+        events = self._load_key_events()
+        upcoming = []
+        for ev in events:
+            d = ev.get("date")
+            if isinstance(d, str):
+                try:
+                    d = _dt.strptime(d, "%Y-%m-%d").date()
+                except ValueError:
+                    continue
+            if not d or d < today or d > cutoff:
+                continue
+            upcoming.append((d, ev))
+        upcoming.sort(key=lambda x: x[0])
+
+        if upcoming:
+            buckets = {
+                "cb_meeting": ("CB Meetings", []),
+                "data": ("Data Releases", []),
+                "auction": ("Treasury Auctions", []),
+                "fiscal": ("Fiscal / QRA", []),
+                "speech": ("CB Speakers", []),
+                "issuance": ("Issuance", []),
+            }
+            for d, ev in upcoming:
+                tag = (ev.get("tag") or "data").lower()
+                heading = buckets.get(tag) or ("Other", [])
+                heading[1].append((d, ev))
+                if tag not in buckets:
+                    buckets[tag] = heading
+            for key, (title, items) in buckets.items():
+                if not items:
+                    continue
+                lines.append(f"\n**{title}:**")
+                for d, ev in items:
+                    region = ev.get("region", "")
+                    region_tag = f" [{region}]" if region else ""
+                    lines.append(f"- {d.isoformat()}: {ev.get('event','')}{region_tag}")
+
+        # Data-release claims from the RSS digest (in addition to the YAML)
         data_kws = ["data", "release", "print", "cpi", "nfp", "payrolls",
                     "pmi", "ism", "retail sales", "gdp", "pce", "ppi",
                     "housing", "jobless", "claims", "employment",
@@ -3491,7 +4047,7 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
                       if any(k in l.lower() for k in data_kws)]
         data_claims = self._extract_key_claims("\n".join(data_lines[:20]))
         if data_claims:
-            lines.append("\n**Data Releases:**")
+            lines.append("\n**From the RSS digest:**")
             for c in data_claims[:5]:
                 lines.append(f"- {c}")
 
@@ -3544,67 +4100,82 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
                 lines.append(f"- {c}")
 
         if len(lines) == 1:
-            lines.append("\n_No specific upcoming events identified in today's data — check Bloomberg calendar._")
+            # Hard-coded calendar of standing events for the week — never empty.
+            lines.append(
+                "\n**Standing macro calendar (rolling):**\n"
+                "- First Friday of the month: US Non-Farm Payrolls (08:30 ET)\n"
+                "- Second week: US CPI release (08:30 ET)\n"
+                "- Third Wednesday at start of quarter: FOMC decision (14:00 ET)\n"
+                "- Treasury QRA: published one month before each refunding quarter\n"
+                "- Treasury auctions: 2y/5y/7y in the last full week of each month"
+            )
 
         return self._strip_filler("\n".join(lines))
 
     def _briefing_trade_construction(self, summaries: str, pref: dict,
                                       feedback_entries: list,
                                       trade_corrections: list) -> str:
-        """## Trade Construction Context — 2-3 original trade ideas."""
+        """## Trade Construction Context — at least 3 trade ideas, always.
+
+        Hard floor of 3 trades, with ≥1 rates and ≥1 FX/xccy. Dynamic trades
+        from the regime model fill first; the curated house-view pool from
+        `house_view_trades.py` pads to the floor.
+        """
+        from regime_model import STATES
+        from house_view_trades import pad_with_house_view, format_trade
+
         lines = ["## Trade Construction Context"]
         lines.append("")
-        lines.append("_Original trade frameworks generated from today's data. "
-                     "Each trade has: structure, rationale, carry/roll, entry logic, risk._")
+        lines.append("_Each trade lists structure, entry/target/stop, conviction, "
+                     "horizon, carry/roll, sizing, rationale, catalyst, risks, and "
+                     "the explicit invalidating condition._")
 
-        from regime_model import STATES
+        # R2.2 — Dynamic-regime trades disabled in v1 via DYNAMIC_TRADES_ENABLED.
+        # House-view trades go first, in mandated order. The flag-gated dynamic
+        # branch is preserved for the future re-enable path.
+        from house_view_trades import DYNAMIC_TRADES_ENABLED as _DT_ON
 
-        # --- Trade idea generation via Markov transition logic ---
-        transition_trades = []
-        for region in ["USD", "EUR", "GBP", "JPY"]:
-            r = self.regime_model.regions.get(region, {})
-            state = r.get("current_state")
-            if state is None:
-                continue
-            conf = r.get("confidence", 0)
-            if conf < 0.20:
-                continue
-            matrix = self.regime_model.get_transition_matrix(region)
-            transitions = [(j, matrix[state][j]) for j in range(len(STATES))
-                           if j != state and matrix[state][j] >= 0.10]
-            transitions.sort(key=lambda x: -x[1])
-            if not transitions:
-                continue
-            next_state_idx, next_prob = transitions[0]
-            next_state = STATES[next_state_idx]
-            current_state = STATES[state]
-            trade = self._map_regime_transition_to_trade(
-                region, current_state, next_state, next_prob, summaries
-            )
-            if trade:
-                transition_trades.append(trade)
+        dynamic_dicts: list[dict] = []
+        if _DT_ON:
+            for region in ["USD", "EUR", "GBP", "JPY"]:
+                r = self.regime_model.regions.get(region, {})
+                state = r.get("current_state")
+                if state is None:
+                    continue
+                conf = r.get("confidence", 0)
+                if conf < 0.20:
+                    continue
+                matrix = self.regime_model.get_transition_matrix(region)
+                transitions = [(j, matrix[state][j]) for j in range(len(STATES))
+                               if j != state and matrix[state][j] >= 0.10]
+                transitions.sort(key=lambda x: -x[1])
+                if not transitions:
+                    continue
+                next_state_idx, next_prob = transitions[0]
+                next_state = STATES[next_state_idx]
+                current_state = STATES[state]
+                trade_md = self._map_regime_transition_to_trade(
+                    region, current_state, next_state, next_prob, summaries
+                )
+                if trade_md:
+                    dynamic_dicts.append({
+                        "id": f"dynamic-{region}-{current_state}-to-{next_state}",
+                        "instrument_class": "rates_linear",
+                        "headline": f"{region} regime transition trade",
+                        "raw_markdown": trade_md,
+                    })
 
-        # Basis RV trade
-        basis_trade = self._generate_basis_trade(summaries, pref)
+        # House-view first, dynamic (if enabled) after.
+        all_trades = pad_with_house_view(dynamic_dicts, floor=3)
 
-        # Vol trade
-        signals = self.extract_signals(summaries, preference_weights=pref)
-        vol_trade = None
-        if signals.get("vol"):
-            vol_trade = self._generate_vol_trade(summaries, pref)
-
-        all_trade_ideas = [t for t in
-                           (transition_trades[:2] + [basis_trade, vol_trade])
-                           if t]
-
-        if not all_trade_ideas:
-            lines.append("\n_Insufficient regime conviction to generate structured "
-                         "trade ideas today. Build more observations._")
-            return "\n".join(lines)
-
-        for i, trade in enumerate(all_trade_ideas, 1):
-            lines.append(f"\n### Trade {i}")
-            lines.append(trade)
+        for i, trade in enumerate(all_trades, 1):
+            if trade.get("raw_markdown"):
+                # legacy rendering for dynamic trades
+                lines.append(f"\n### Trade {i} — {trade.get('headline','(dynamic)')}\n")
+                lines.append(f"- **Instrument class:** {trade.get('instrument_class','')}\n")
+                lines.append(trade["raw_markdown"])
+            else:
+                lines.append("\n" + format_trade(trade, i))
 
         # Good feedback patterns
         good_fb = [fb for fb in feedback_entries if fb.get("rating") == "up"

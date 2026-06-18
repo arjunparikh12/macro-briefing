@@ -1,0 +1,40 @@
+# key_events.yaml — Forward macro calendar (rolling 30 business days).
+#
+# Hand-maintained until B3 (TreasuryDirect auctions) and a proper economic
+# calendar feed land. `macro_llm._briefing_key_events` reads this file and
+# emits all events with `date` ≤ today + 14 business days, sorted by date.
+#
+# Each entry:
+#   - date:    YYYY-MM-DD
+#   - event:   short label (e.g. "FOMC decision")
+#   - region:  USD / EUR / GBP / JPY / global
+#   - tag:     cb_meeting | data | auction | issuance | fiscal | speech
+
+events:
+  # ── Central bank meetings ────────────────────────────────────────────────
+  - {date: 2026-06-19, event: "BOJ MPM (Jun)",                       region: JPY,    tag: cb_meeting}
+  - {date: 2026-06-23, event: "ECB Governing Council non-policy",     region: EUR,    tag: cb_meeting}
+  - {date: 2026-07-23, event: "ECB Governing Council (rate decision)",region: EUR,    tag: cb_meeting}
+  - {date: 2026-07-30, event: "FOMC decision + SEP + dot plot",       region: USD,    tag: cb_meeting}
+  - {date: 2026-07-31, event: "BOJ MPM + Outlook Report",             region: JPY,    tag: cb_meeting}
+  - {date: 2026-08-06, event: "BOE MPC (Aug)",                        region: GBP,    tag: cb_meeting}
+
+  # ── Data releases ───────────────────────────────────────────────────────
+  - {date: 2026-06-18, event: "US Jobless Claims (weekly)",           region: USD,    tag: data}
+  - {date: 2026-06-19, event: "BOJ press conference + Q&A",           region: JPY,    tag: data}
+  - {date: 2026-06-24, event: "S&P Global Flash PMIs (US/EZ/UK)",     region: global, tag: data}
+  - {date: 2026-06-26, event: "US Core PCE deflator (May)",           region: USD,    tag: data}
+  - {date: 2026-06-27, event: "UK Q1 GDP final",                      region: GBP,    tag: data}
+  - {date: 2026-06-30, event: "EZ Flash CPI (June)",                  region: EUR,    tag: data}
+  - {date: 2026-07-02, event: "US NFP (June)",                        region: USD,    tag: data}
+  - {date: 2026-07-08, event: "FOMC minutes (Jun meeting)",           region: USD,    tag: data}
+  - {date: 2026-07-15, event: "US CPI (June)",                        region: USD,    tag: data}
+
+  # ── Treasury supply & QRA ───────────────────────────────────────────────
+  - {date: 2026-06-23, event: "US 2y / 5y / 7y note auctions (week of)", region: USD, tag: auction}
+  - {date: 2026-06-25, event: "US 7y note auction",                   region: USD,    tag: auction}
+  - {date: 2026-07-31, event: "Treasury QRA (Aug refunding)",         region: USD,    tag: fiscal}
+
+  # ── Speakers / set-piece ────────────────────────────────────────────────
+  - {date: 2026-06-25, event: "Powell semi-annual testimony (Senate)",region: USD,    tag: speech}
+  - {date: 2026-06-26, event: "Powell semi-annual testimony (House)", region: USD,    tag: speech}

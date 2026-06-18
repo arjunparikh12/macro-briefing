@@ -554,7 +554,8 @@ class MarkovRegimeModel:
 
         if state_a is None or state_b is None:
             return {"direction": "unknown", "score": 0,
-                    "explanation": "Insufficient regime data — more observations needed"}
+                    "explanation": (f"{region_a}-{region_b} regime states not yet "
+                                    "classified; basis signal driven by flow/seasonals.")}
 
         score = DIVERGENCE_SCORES.get((state_a, state_b), 0)
         conf_a = ra["confidence"]

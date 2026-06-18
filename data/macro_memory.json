@@ -71,527 +71,79 @@
       ]
     },
     {
-      "timestamp": "2026-04-27 11:30",
-      "question": "[Daily briefing generated: 2026-04-27]",
-      "answer": "# Macro Briefing \u2014 2026-04-27\n_Generated 07:29 AM ET on Monday, April 27, 2026_\n\n## Market Summary\n\nUSD regime not yet classified \u2014 insufficient data. - Fed Funds Effective Rate: 3.64 % annualised (as of 2026-03-01) - US Unemployment Rate: 4.3 % (as of 2026-03-01) - US 10Y Treasury Yield: 4.34 % yield (as of 2026-04-23)\n\nNo strong FX divergence signal from regime model.\n\nNo strong basis signal. - 10Y-2Y Spread: 0.53 bp (\u00d7100) (as of 2026-04-24) - SOFR: 3.65 % annualised (as of 2026-04-23)\n\n**Key",
-      "section": "daily_briefing",
-      "regime": "full_briefing",
-      "themes": [
-        "fed",
-        "ecb",
-        "curve",
-        "basis",
-        "fx"
-      ]
-    },
-    {
-      "timestamp": "2026-04-28 11:31",
-      "question": "[Daily briefing generated: 2026-04-28]",
-      "answer": "# Macro Briefing \u2014 2026-04-28\n_Generated 07:30 AM ET on Tuesday, April 28, 2026_\n\n## Market Summary\n\nUSD regime not yet classified \u2014 insufficient data. - Fed Funds Effective Rate: 3.64 % annualised (as of 2026-03-01) - US Unemployment Rate: 4.3 % (as of 2026-03-01) - US 10Y Treasury Yield: 4.31 % yield (as of 2026-04-24)\n\nNo strong FX divergence signal from regime model.\n\nNo strong basis signal. - 10Y-2Y Spread: 0.57 bp (\u00d7100) (as of 2026-04-27) - SOFR: 3.66 % annualised (as of 2026-04-24)\n\n**Ke",
-      "section": "daily_briefing",
-      "regime": "full_briefing",
-      "themes": [
-        "fed",
-        "ecb",
-        "curve",
-        "basis",
-        "fx"
-      ]
-    },
-    {
-      "timestamp": "2026-04-29 11:23",
-      "question": "[Daily briefing generated: 2026-04-29]",
-      "answer": "# Macro Briefing \u2014 2026-04-29\n_Generated 07:23 AM ET on Wednesday, April 29, 2026_\n\n## Market Summary\n\nUSD regime not yet classified \u2014 insufficient data. - Fed Funds Effective Rate: 3.64 % annualised (as of 2026-03-01) - US Unemployment Rate: 4.3 % (as of 2026-03-01) - US 10Y Treasury Yield: 4.35 % yield (as of 2026-04-27)\n\nNo strong FX divergence signal from regime model.\n\nNo strong basis signal. - 10Y-2Y Spread: 0.52 bp (\u00d7100) (as of 2026-04-28) - SOFR: 3.66 % annualised (as of 2026-04-27)\n\n**",
-      "section": "daily_briefing",
-      "regime": "full_briefing",
-      "themes": [
-        "fed",
-        "ecb",
-        "curve",
-        "basis",
-        "fx"
-      ]
-    },
-    {
-      "timestamp": "2026-04-30 11:22",
-      "question": "[Daily briefing generated: 2026-04-30]",
-      "answer": "# Macro Briefing \u2014 2026-04-30\n_Generated 07:22 AM ET on Thursday, April 30, 2026_\n\n## Market Summary\n\nUSD regime not yet classified \u2014 insufficient data. - Fed Funds Effective Rate: 3.64 % annualised (as of 2026-03-01) - US Unemployment Rate: 4.3 % (as of 2026-03-01) - US 10Y Treasury Yield: 4.36 % yield (as of 2026-04-28)\n\nNo strong FX divergence signal from regime model.\n\nNo strong basis signal. - 10Y-2Y Spread: 0.50 bp (\u00d7100) (as of 2026-04-29) - SOFR: 3.64 % annualised (as of 2026-04-28)\n\n**K",
-      "section": "daily_briefing",
-      "regime": "full_briefing",
-      "themes": [
-        "fed",
-        "ecb",
-        "curve",
-        "basis",
-        "fx"
-      ]
-    },
-    {
-      "timestamp": "2026-05-01 11:01",
-      "question": "[Daily briefing generated: 2026-05-01]",
-      "answer": "# Macro Briefing \u2014 2026-05-01\n_Generated 06:59 AM ET on Friday, May 01, 2026_\n\n## Market Summary\n\nUSD regime not yet classified \u2014 insufficient data. - Fed Funds Effective Rate: 3.64 % annualised (as of 2026-03-01) - US Unemployment Rate: 4.3 % (as of 2026-03-01) - US 10Y Treasury Yield: 4.42 % yield (as of 2026-04-29)\n\nNo strong FX divergence signal from regime model.\n\nNo strong basis signal. - 10Y-2Y Spread: 0.52 bp (\u00d7100) (as of 2026-04-30) - SOFR: 3.63 % annualised (as of 2026-04-29)\n\n**Key l",
-      "section": "daily_briefing",
-      "regime": "full_briefing",
-      "themes": [
-        "fed",
-        "ecb",
-        "curve",
-        "basis",
-        "fx"
-      ]
-    },
-    {
-      "timestamp": "2026-05-04 11:31",
-      "question": "[Daily briefing generated: 2026-05-04]",
-      "answer": "# Macro Briefing \u2014 2026-05-04\n_Generated 07:30 AM ET on Monday, May 04, 2026_\n\n## Market Summary\n\nUSD regime not yet classified \u2014 insufficient data. - Fed Funds Effective Rate: 3.64 % annualised (as of 2026-04-01) - US Unemployment Rate: 4.3 % (as of 2026-03-01) - US 10Y Treasury Yield: 4.40 % yield (as of 2026-04-30)\n\nNo strong FX divergence signal from regime model.\n\nNo strong basis signal. - 10Y-2Y Spread: 0.51 bp (\u00d7100) (as of 2026-05-01) - SOFR: 3.66 % annualised (as of 2026-04-30)\n\n**Key l",
-      "section": "daily_briefing",
-      "regime": "full_briefing",
-      "themes": [
-        "fed",
-        "ecb",
-        "curve",
-        "basis",
-        "fx"
-      ]
-    },
-    {
-      "timestamp": "2026-05-05 11:09",
-      "question": "[Daily briefing generated: 2026-05-05]",
-      "answer": "# Macro Briefing \u2014 2026-05-05\n_Generated 07:08 AM ET on Tuesday, May 05, 2026_\n\n## Market Summary\n\nUSD regime not yet classified \u2014 insufficient data. - Fed Funds Effective Rate: 3.64 % annualised (as of 2026-04-01) - US Unemployment Rate: 4.3 % (as of 2026-03-01) - US 10Y Treasury Yield: 4.39 % yield (as of 2026-05-01)\n\nNo strong FX divergence signal from regime model.\n\nNo strong basis signal. - 10Y-2Y Spread: 0.50 bp (\u00d7100) (as of 2026-05-04) - SOFR: 3.64 % annualised (as of 2026-05-01)\n\n**Key ",
-      "section": "daily_briefing",
-      "regime": "full_briefing",
-      "themes": [
-        "fed",
-        "ecb",
-        "curve",
-        "basis",
-        "fx"
-      ]
-    },
-    {
-      "timestamp": "2026-05-06 11:43",
-      "question": "[Daily briefing generated: 2026-05-06]",
-      "answer": "# Macro Briefing \u2014 2026-05-06\n_Generated 07:42 AM ET on Wednesday, May 06, 2026_\n\n## Market Summary\n\nUSD regime not yet classified \u2014 insufficient data. - Fed Funds Effective Rate: 3.64 % annualised (as of 2026-04-01) - US Unemployment Rate: 4.3 % (as of 2026-03-01) - US 10Y Treasury Yield: 4.45 % yield (as of 2026-05-04)\n\nNo strong FX divergence signal from regime model.\n\nNo strong basis signal. - 10Y-2Y Spread: 0.50 bp (\u00d7100) (as of 2026-05-05) - SOFR: 3.63 % annualised (as of 2026-05-04)\n\n**Ke",
-      "section": "daily_briefing",
-      "regime": "full_briefing",
-      "themes": [
-        "fed",
-        "ecb",
-        "curve",
-        "basis",
-        "fx"
-      ]
-    },
-    {
-      "timestamp": "2026-05-07 11:31",
-      "question": "[Daily briefing generated: 2026-05-07]",
-      "answer": "# Macro Briefing \u2014 2026-05-07\n_Generated 07:31 AM ET on Thursday, May 07, 2026_\n\n## Market Summary\n\nUSD regime not yet classified \u2014 insufficient data. - Fed Funds Effective Rate: 3.64 % annualised (as of 2026-04-01) - US Unemployment Rate: 4.3 % (as of 2026-03-01) - US 10Y Treasury Yield: 4.43 % yield (as of 2026-05-05)\n\nNo strong FX divergence signal from regime model.\n\nNo strong basis signal. - 10Y-2Y Spread: 0.49 bp (\u00d7100) (as of 2026-05-06) - SOFR: 3.62 % annualised (as of 2026-05-05)\n\n**Key",
-      "section": "daily_briefing",
-      "regime": "full_briefing",
-      "themes": [
-        "fed",
-        "ecb",
-        "curve",
-        "basis",
-        "fx"
-      ]
-    },
-    {
-      "timestamp": "2026-05-08 11:02",
-      "question": "[Daily briefing generated: 2026-05-08]",
-      "answer": "# Macro Briefing \u2014 2026-05-08\n_Generated 07:00 AM ET on Friday, May 08, 2026_\n\n## Market Summary\n\nUSD regime not yet classified \u2014 insufficient data. - Fed Funds Effective Rate: 3.64 % annualised (as of 2026-04-01) - US Unemployment Rate: 4.3 % (as of 2026-03-01) - US 10Y Treasury Yield: 4.36 % yield (as of 2026-05-06)\n\nNo strong FX divergence signal from regime model.\n\nNo strong basis signal. - 10Y-2Y Spread: 0.49 bp (\u00d7100) (as of 2026-05-07) - SOFR: 3.61 % annualised (as of 2026-05-06)\n\n**Key l",
-      "section": "daily_briefing",
-      "regime": "full_briefing",
-      "themes": [
-        "fed",
-        "ecb",
-        "curve",
-        "basis",
-        "fx"
-      ]
-    },
-    {
-      "timestamp": "2026-05-11 12:34",
-      "question": "[Daily briefing generated: 2026-05-11]",
-      "answer": "# Macro Briefing \u2014 2026-05-11\n_Generated 08:33 AM ET on Monday, May 11, 2026_\n\n## Market Summary\n\nUSD regime not yet classified \u2014 insufficient data. - Fed Funds Effective Rate: 3.64 % annualised (as of 2026-04-01) - US Unemployment Rate: 4.3 % (as of 2026-04-01) - US 10Y Treasury Yield: 4.41 % yield (as of 2026-05-07)\n\nNo strong FX divergence signal from regime model.\n\nNo strong basis signal. - 10Y-2Y Spread: 0.48 bp (\u00d7100) (as of 2026-05-08) - SOFR: 3.60 % annualised (as of 2026-05-08)\n\n**Key l",
-      "section": "daily_briefing",
-      "regime": "full_briefing",
-      "themes": [
-        "fed",
-        "ecb",
-        "curve",
-        "basis",
-        "fx"
-      ]
-    },
-    {
-      "timestamp": "2026-05-12 11:46",
-      "question": "[Daily briefing generated: 2026-05-12]",
-      "answer": "# Macro Briefing \u2014 2026-05-12\n_Generated 07:45 AM ET on Tuesday, May 12, 2026_\n\n## Market Summary\n\nUSD regime not yet classified \u2014 insufficient data. - Fed Funds Effective Rate: 3.64 % annualised (as of 2026-04-01) - US Unemployment Rate: 4.3 % (as of 2026-04-01) - US 10Y Treasury Yield: 4.38 % yield (as of 2026-05-08)\n\nNo strong FX divergence signal from regime model.\n\nNo strong basis signal. - 10Y-2Y Spread: 0.47 bp (\u00d7100) (as of 2026-05-11) - SOFR: 3.60 % annualised (as of 2026-05-08)\n\n**Key ",
-      "section": "daily_briefing",
-      "regime": "full_briefing",
-      "themes": [
-        "fed",
-        "ecb",
-        "curve",
-        "basis",
-        "fx"
-      ]
-    },
-    {
-      "timestamp": "2026-05-13 11:54",
-      "question": "[Daily briefing generated: 2026-05-13]",
-      "answer": "# Macro Briefing \u2014 2026-05-13\n_Generated 07:53 AM ET on Wednesday, May 13, 2026_\n\n## Market Summary\n\nUSD regime not yet classified \u2014 insufficient data. - Fed Funds Effective Rate: 3.64 % annualised (as of 2026-04-01) - US Unemployment Rate: 4.3 % (as of 2026-04-01) - US 10Y Treasury Yield: 4.42 % yield (as of 2026-05-11)\n\nNo strong FX divergence signal from regime model.\n\nNo strong basis signal. - 10Y-2Y Spread: 0.46 bp (\u00d7100) (as of 2026-05-12) - SOFR: 3.60 % annualised (as of 2026-05-11)\n\n**Ke",
-      "section": "daily_briefing",
-      "regime": "full_briefing",
-      "themes": [
-        "fed",
-        "ecb",
-        "curve",
-        "basis",
-        "fx"
-      ]
-    },
-    {
-      "timestamp": "2026-05-14 11:42",
-      "question": "[Daily briefing generated: 2026-05-14]",
-      "answer": "# Macro Briefing \u2014 2026-05-14\n_Generated 07:42 AM ET on Thursday, May 14, 2026_\n\n## Market Summary\n\nUSD regime not yet classified \u2014 insufficient data. - Fed Funds Effective Rate: 3.64 % annualised (as of 2026-04-01) - US Unemployment Rate: 4.3 % (as of 2026-04-01) - US 10Y Treasury Yield: 4.46 % yield (as of 2026-05-12)\n\nNo strong FX divergence signal from regime model.\n\nNo strong basis signal. - SOFR: 3.60 % annualised (as of 2026-05-12)\n\n**Key levels (FRED):**\n- Fed Funds Effective Rate: 3.64 ",
-      "section": "daily_briefing",
-      "regime": "full_briefing",
-      "themes": [
-        "fed",
-        "ecb",
-        "curve",
-        "basis",
-        "fx"
-      ]
-    },
-    {
-      "timestamp": "2026-05-15 11:46",
-      "question": "[Daily briefing generated: 2026-05-15]",
-      "answer": "# Macro Briefing \u2014 2026-05-15\n_Generated 07:46 AM ET on Friday, May 15, 2026_\n\n## Market Summary\n\nUSD regime not yet classified \u2014 insufficient data. - Fed Funds Effective Rate: 3.64 % annualised (as of 2026-04-01) - US Unemployment Rate: 4.3 % (as of 2026-04-01) - US 10Y Treasury Yield: 4.46 % yield (as of 2026-05-13)\n\nNo strong FX divergence signal from regime model.\n\nNo strong basis signal. - 10Y-2Y Spread: 0.48 bp (\u00d7100) (as of 2026-05-13) - SOFR: 3.59 % annualised (as of 2026-05-13)\n\n**Key l",
-      "section": "daily_briefing",
-      "regime": "full_briefing",
-      "themes": [
-        "fed",
-        "ecb",
-        "curve",
-        "basis",
-        "fx"
-      ]
-    },
-    {
-      "timestamp": "2026-05-18 12:59",
-      "question": "[Daily briefing generated: 2026-05-18]",
-      "answer": "# Macro Briefing \u2014 2026-05-18\n_Generated 08:58 AM ET on Monday, May 18, 2026_\n\n## Market Summary\n\nUSD regime not yet classified \u2014 insufficient data. - Fed Funds Effective Rate: 3.64 % annualised (as of 2026-04-01) - US Unemployment Rate: 4.3 % (as of 2026-04-01) - US 10Y Treasury Yield: 4.47 % yield (as of 2026-05-14)\n\nNo strong FX divergence signal from regime model.\n\nNo strong basis signal. - 10Y-2Y Spread: 0.50 bp (\u00d7100) (as of 2026-05-15) - SOFR: 3.56 % annualised (as of 2026-05-14)\n\n**Key l",
-      "section": "daily_briefing",
-      "regime": "full_briefing",
-      "themes": [
-        "fed",
-        "ecb",
-        "curve",
-        "basis",
-        "fx"
-      ]
-    },
-    {
-      "timestamp": "2026-05-19 12:33",
-      "question": "[Daily briefing generated: 2026-05-19]",
-      "answer": "# Macro Briefing \u2014 2026-05-19\n_Generated 08:33 AM ET on Tuesday, May 19, 2026_\n\n## Market Summary\n\nUSD regime not yet classified \u2014 insufficient data. - Fed Funds Effective Rate: 3.64 % annualised (as of 2026-04-01) - US Unemployment Rate: 4.3 % (as of 2026-04-01) - US 10Y Treasury Yield: 4.59 % yield (as of 2026-05-15)\n\nNo strong FX divergence signal from regime model.\n\nNo strong basis signal. - 10Y-2Y Spread: 0.54 bp (\u00d7100) (as of 2026-05-18) - SOFR: 3.55 % annualised (as of 2026-05-15)\n\n**Key ",
-      "section": "daily_briefing",
-      "regime": "full_briefing",
-      "themes": [
-        "fed",
-        "ecb",
-        "curve",
-        "basis",
-        "fx"
-      ]
-    },
-    {
-      "timestamp": "2026-05-20 12:14",
-      "question": "[Daily briefing generated: 2026-05-20]",
-      "answer": "# Macro Briefing \u2014 2026-05-20\n_Generated 08:14 AM ET on Wednesday, May 20, 2026_\n\n## Market Summary\n\nUSD regime not yet classified \u2014 insufficient data. - Fed Funds Effective Rate: 3.64 % annualised (as of 2026-04-01) - US Unemployment Rate: 4.3 % (as of 2026-04-01) - US 10Y Treasury Yield: 4.61 % yield (as of 2026-05-18)\n\nNo strong FX divergence signal from regime model.\n\nNo strong basis signal. - 10Y-2Y Spread: 0.54 bp (\u00d7100) (as of 2026-05-19) - SOFR: 3.51 % annualised (as of 2026-05-19)\n\n**Ke",
-      "section": "daily_briefing",
-      "regime": "full_briefing",
-      "themes": [
-        "fed",
-        "ecb",
-        "curve",
-        "basis",
-        "fx"
-      ]
-    },
-    {
-      "timestamp": "2026-05-21 12:38",
-      "question": "[Daily briefing generated: 2026-05-21]",
-      "answer": "# Macro Briefing \u2014 2026-05-21\n_Generated 08:38 AM ET on Thursday, May 21, 2026_\n\n## Market Summary\n\nUSD regime not yet classified \u2014 insufficient data. - Fed Funds Effective Rate: 3.64 % annualised (as of 2026-04-01) - US Unemployment Rate: 4.3 % (as of 2026-04-01) - US 10Y Treasury Yield: 4.67 % yield (as of 2026-05-19)\n\nNo strong FX divergence signal from regime model.\n\nNo strong basis signal. - 10Y-2Y Spread: 0.53 bp (\u00d7100) (as of 2026-05-20) - SOFR: 3.50 % annualised (as of 2026-05-20)\n\n**Key",
-      "section": "daily_briefing",
-      "regime": "full_briefing",
-      "themes": [
-        "fed",
-        "ecb",
-        "curve",
-        "basis",
-        "fx"
-      ]
-    },
-    {
-      "timestamp": "2026-05-22 12:11",
-      "question": "[Daily briefing generated: 2026-05-22]",
-      "answer": "# Macro Briefing \u2014 2026-05-22\n_Generated 08:11 AM ET on Friday, May 22, 2026_\n\n## Market Summary\n\nUSD regime not yet classified \u2014 insufficient data. - Fed Funds Effective Rate: 3.64 % annualised (as of 2026-04-01) - US Unemployment Rate: 4.3 % (as of 2026-04-01) - US 10Y Treasury Yield: 4.57 % yield (as of 2026-05-20)\n\nNo strong FX divergence signal from regime model.\n\nNo strong basis signal. - 10Y-2Y Spread: 0.49 bp (\u00d7100) (as of 2026-05-21) - SOFR: 3.51 % annualised (as of 2026-05-21)\n\n**Key l",
-      "section": "daily_briefing",
-      "regime": "full_briefing",
-      "themes": [
-        "fed",
-        "ecb",
-        "curve",
-        "basis",
-        "fx"
-      ]
-    },
-    {
-      "timestamp": "2026-05-25 12:55",
-      "question": "[Daily briefing generated: 2026-05-25]",
-      "answer": "# Macro Briefing \u2014 2026-05-25\n_Generated 08:54 AM ET on Monday, May 25, 2026_\n\n## Market Summary\n\nUSD regime not yet classified \u2014 insufficient data. - Fed Funds Effective Rate: 3.64 % annualised (as of 2026-04-01) - US Unemployment Rate: 4.3 % (as of 2026-04-01) - US 10Y Treasury Yield: 4.57 % yield (as of 2026-05-21)\n\nNo strong FX divergence signal from regime model.\n\nNo strong basis signal. - 10Y-2Y Spread: 0.43 bp (\u00d7100) (as of 2026-05-22) - SOFR: 3.51 % annualised (as of 2026-05-21)\n\n**Key l",
-      "section": "daily_briefing",
-      "regime": "full_briefing",
-      "themes": [
-        "fed",
-        "ecb",
-        "curve",
-        "basis",
-        "fx"
-      ]
-    },
-    {
-      "timestamp": "2026-05-26 13:58",
-      "question": "[Daily briefing generated: 2026-05-26]",
-      "answer": "# Macro Briefing \u2014 2026-05-26\n_Generated 09:58 AM ET on Tuesday, May 26, 2026_\n\n## Market Summary\n\nUSD regime not yet classified \u2014 insufficient data. - Fed Funds Effective Rate: 3.64 % annualised (as of 2026-04-01) - US Unemployment Rate: 4.3 % (as of 2026-04-01) - US 10Y Treasury Yield: 4.57 % yield (as of 2026-05-21)\n\nNo strong FX divergence signal from regime model.\n\nNo strong basis signal. - 10Y-2Y Spread: 0.43 bp (\u00d7100) (as of 2026-05-22) - SOFR: 3.55 % annualised (as of 2026-05-22)\n\n**Key ",
-      "section": "daily_briefing",
-      "regime": "full_briefing",
-      "themes": [
-        "fed",
-        "ecb",
-        "curve",
-        "basis",
-        "fx"
-      ]
-    },
-    {
-      "timestamp": "2026-05-27 14:31",
-      "question": "[Daily briefing generated: 2026-05-27]",
-      "answer": "# Macro Briefing \u2014 2026-05-27\n_Generated 10:31 AM ET on Wednesday, May 27, 2026_\n\n## Market Summary\n\nUSD regime not yet classified \u2014 insufficient data. - Fed Funds Effective Rate: 3.64 % annualised (as of 2026-04-01) - US Unemployment Rate: 4.3 % (as of 2026-04-01) - US 10Y Treasury Yield: 4.56 % yield (as of 2026-05-22)\n\nNo strong FX divergence signal from regime model.\n\nNo strong basis signal. - 10Y-2Y Spread: 0.49 bp (\u00d7100) (as of 2026-05-26) - SOFR: 3.63 % annualised (as of 2026-05-26)\n\n**Ke",
-      "section": "daily_briefing",
-      "regime": "full_briefing",
-      "themes": [
-        "fed",
-        "ecb",
-        "curve",
-        "basis",
-        "fx"
-      ]
-    },
-    {
-      "timestamp": "2026-05-28 13:01",
-      "question": "[Daily briefing generated: 2026-05-28]",
-      "answer": "# Macro Briefing \u2014 2026-05-28\n_Generated 08:59 AM ET on Thursday, May 28, 2026_\n\n## Market Summary\n\nUSD regime not yet classified \u2014 insufficient data. - Fed Funds Effective Rate: 3.64 % annualised (as of 2026-04-01) - US Unemployment Rate: 4.3 % (as of 2026-04-01) - US 30Y Treasury Yield: 5.03 % yield (as of 2026-05-26)\n\nNo strong FX divergence signal from regime model.\n\nNo strong basis signal. - SOFR: 3.63 % annualised (as of 2026-05-27)\n\n**Key levels (FRED):**\n- Fed Funds Effective Rate: 3.64 ",
-      "section": "daily_briefing",
-      "regime": "full_briefing",
-      "themes": [
-        "fed",
-        "ecb",
-        "curve",
-        "basis",
-        "fx"
-      ]
-    },
-    {
-      "timestamp": "2026-05-29 12:38",
-      "question": "[Daily briefing generated: 2026-05-29]",
-      "answer": "# Macro Briefing \u2014 2026-05-29\n_Generated 08:38 AM ET on Friday, May 29, 2026_\n\n## Market Summary\n\nUSD regime not yet classified \u2014 insufficient data. - Fed Funds Effective Rate: 3.64 % annualised (as of 2026-04-01) - US Unemployment Rate: 4.3 % (as of 2026-04-01) - US 10Y Treasury Yield: 4.48 % yield (as of 2026-05-27)\n\nNo strong FX divergence signal from regime model.\n\nNo strong basis signal. - 10Y-2Y Spread: 0.46 bp (\u00d7100) (as of 2026-05-28) - SOFR: 3.63 % annualised (as of 2026-05-27)\n\n**Key l",
-      "section": "daily_briefing",
-      "regime": "full_briefing",
-      "themes": [
-        "fed",
-        "ecb",
-        "curve",
-        "basis",
-        "fx"
-      ]
-    },
-    {
-      "timestamp": "2026-06-01 15:47",
-      "question": "[Daily briefing generated: 2026-06-01]",
-      "answer": "# Macro Briefing \u2014 2026-06-01\n_Generated 11:46 AM ET on Monday, June 01, 2026_\n\n## Market Summary\n\nUSD regime not yet classified \u2014 insufficient data. - Fed Funds Effective Rate: 3.64 % annualised (as of 2026-04-01) - US Unemployment Rate: 4.3 % (as of 2026-04-01) - US 10Y Treasury Yield: 4.45 % yield (as of 2026-05-28)\n\nNo strong FX divergence signal from regime model.\n\nNo strong basis signal. - 10Y-2Y Spread: 0.47 bp (\u00d7100) (as of 2026-05-29) - SOFR: 3.63 % annualised (as of 2026-05-29)\n\n**Key ",
-      "section": "daily_briefing",
-      "regime": "full_briefing",
-      "themes": [
-        "fed",
-        "ecb",
-        "curve",
-        "basis",
-        "fx"
-      ]
-    },
-    {
-      "timestamp": "2026-06-02 13:46",
-      "question": "[Daily briefing generated: 2026-06-02]",
-      "answer": "# Macro Briefing \u2014 2026-06-02\n_Generated 09:45 AM ET on Tuesday, June 02, 2026_\n\n## Market Summary\n\nUSD regime not yet classified \u2014 insufficient data. - Fed Funds Effective Rate: 3.63 % annualised (as of 2026-05-01) - US Unemployment Rate: 4.3 % (as of 2026-04-01) - US 10Y Treasury Yield: 4.45 % yield (as of 2026-05-29)\n\nNo strong FX divergence signal from regime model. - Historic bullion rally boosts metal\u2019s share of reserves to 27% while central banks diversify away from dollar\n\nNo strong basi",
-      "section": "daily_briefing",
-      "regime": "full_briefing",
-      "themes": [
-        "fed",
-        "ecb",
-        "curve",
-        "basis",
-        "fx"
-      ]
-    },
-    {
-      "timestamp": "2026-06-03 14:23",
-      "question": "[Daily briefing generated: 2026-06-03]",
-      "answer": "# Macro Briefing \u2014 2026-06-03\n_Generated 10:19 AM ET on Wednesday, June 03, 2026_\n\n## Market Summary\n\nUSD regime not yet classified \u2014 insufficient data.\n\nNo strong FX divergence signal from regime model.\n\nNo strong basis signal.\n\n## Central Bank Watch\n\n**Fed:**\n- No specific Fed news in today's data \u2014 check Bloomberg.\n\n**ECB:**\nThe ECB is in the early stages of easing. Front-end should lead the rally as near-term cuts get priced. The key risk is a shallow cycle \u2014 if cuts disappoint, belly cheape",
-      "section": "daily_briefing",
-      "regime": "full_briefing",
-      "themes": [
-        "fed",
-        "ecb",
-        "curve",
-        "basis",
-        "fx"
-      ]
-    },
-    {
-      "timestamp": "2026-06-04 12:40",
-      "question": "[Daily briefing generated: 2026-06-04]",
-      "answer": "# Macro Briefing \u2014 2026-06-04\n_Generated 08:36 AM ET on Thursday, June 04, 2026_\n\n## Market Summary\n\nUSD regime not yet classified \u2014 insufficient data.\n\nNo strong FX divergence signal from regime model.\n\nNo strong basis signal.\n\n## Central Bank Watch\n\n**Fed:**\n- No specific Fed news in today's data \u2014 check Bloomberg.\n\n**ECB:**\nThe ECB is in the early stages of easing. Front-end should lead the rally as near-term cuts get priced. The key risk is a shallow cycle \u2014 if cuts disappoint, belly cheapen",
-      "section": "daily_briefing",
-      "regime": "full_briefing",
-      "themes": [
-        "fed",
-        "ecb",
-        "curve",
-        "basis",
-        "fx"
-      ]
-    },
-    {
-      "timestamp": "2026-06-05 12:33",
-      "question": "[Daily briefing generated: 2026-06-05]",
-      "answer": "# Macro Briefing \u2014 2026-06-05\n_Generated 08:29 AM ET on Friday, June 05, 2026_\n\n## Market Summary\n\nUSD regime not yet classified \u2014 insufficient data.\n\nNo strong FX divergence signal from regime model.\n\nNo strong basis signal.\n\n## Central Bank Watch\n\n**Fed:**\n- No specific Fed news in today's data \u2014 check Bloomberg.\n\n**ECB:**\nThe ECB is in the early stages of easing. Front-end should lead the rally as near-term cuts get priced. The key risk is a shallow cycle \u2014 if cuts disappoint, belly cheapens ",
-      "section": "daily_briefing",
-      "regime": "full_briefing",
-      "themes": [
-        "fed",
-        "ecb",
-        "curve",
-        "basis",
-        "fx"
-      ]
-    },
-    {
-      "timestamp": "2026-06-08 14:00",
-      "question": "[Daily briefing generated: 2026-06-08]",
-      "answer": "# Macro Briefing \u2014 2026-06-08\n_Generated 09:57 AM ET on Monday, June 08, 2026_\n\n## Market Summary\n\nUSD regime not yet classified \u2014 insufficient data.\n\nNo strong FX divergence signal from regime model.\n\nNo strong basis signal.\n\n**Key levels (FRED):**\n- US CPI YoY: 332.407 % YoY (as of 2026-04-01)\n- US CPI YoY: 332.407 % YoY (as of 2026-04-01)\n\n## Central Bank Watch\n\n**Fed:**\n- No specific Fed news in today's data \u2014 check Bloomberg.\n\n**ECB:**\nThe ECB is in the early stages of easing. Front-end sho",
-      "section": "daily_briefing",
-      "regime": "full_briefing",
-      "themes": [
-        "fed",
-        "ecb",
-        "curve",
-        "basis",
-        "fx"
-      ]
-    },
-    {
-      "timestamp": "2026-06-09 12:32",
-      "question": "[Daily briefing generated: 2026-06-09]",
-      "answer": "# Macro Briefing \u2014 2026-06-09\n_Generated 08:29 AM ET on Tuesday, June 09, 2026_\n\n## Market Summary\n\nUSD regime not yet classified \u2014 insufficient data. - ICE BofA US Corp OAS: 0.74 bp (as of 2026-06-05) - ICE BofA US Corp OAS: 0.74 bp (as of 2026-06-05)\n\nNo strong FX divergence signal from regime model.\n\nNo strong basis signal.\n\n**Key levels (FRED):**\n- ICE BofA US Corp OAS: 0.74 bp (as of 2026-06-05)\n- ICE BofA US Corp OAS: 0.74 bp (as of 2026-06-05)\n\n## Central Bank Watch\n\n**Fed:**\n- No specifi",
-      "section": "daily_briefing",
-      "regime": "full_briefing",
-      "themes": [
-        "fed",
-        "ecb",
-        "curve",
-        "basis",
-        "fx"
-      ]
-    },
-    {
-      "timestamp": "2026-06-10 12:51",
-      "question": "[Daily briefing generated: 2026-06-10]",
-      "answer": "# Macro Briefing \u2014 2026-06-10\n_Generated 08:47 AM ET on Wednesday, June 10, 2026_\n\n## Market Summary\n\nUSD regime not yet classified \u2014 insufficient data.\n\nNo strong FX divergence signal from regime model.\n\nNo strong basis signal.\n\n## Central Bank Watch\n\n**Fed:**\n- No specific Fed news in today's data \u2014 check Bloomberg.\n\n**ECB:**\nThe ECB is in the early stages of easing. Front-end should lead the rally as near-term cuts get priced. The key risk is a shallow cycle \u2014 if cuts disappoint, belly cheape",
-      "section": "daily_briefing",
-      "regime": "full_briefing",
-      "themes": [
-        "fed",
-        "ecb",
-        "curve",
-        "basis",
-        "fx"
-      ]
-    },
-    {
-      "timestamp": "2026-06-11 13:51",
-      "question": "[Daily briefing generated: 2026-06-11]",
-      "answer": "# Macro Briefing \u2014 2026-06-11\n_Generated 09:48 AM ET on Thursday, June 11, 2026_\n\n## Market Summary\n\nUSD regime not yet classified \u2014 insufficient data.\n\nNo strong FX divergence signal from regime model.\n\nNo strong basis signal.\n\n## Central Bank Watch\n\n**Fed:**\n- No specific Fed news in today's data \u2014 check Bloomberg.\n\n**ECB:**\nThe ECB is in the early stages of easing. Front-end should lead the rally as near-term cuts get priced. The key risk is a shallow cycle \u2014 if cuts disappoint, belly cheapen",
-      "section": "daily_briefing",
-      "regime": "full_briefing",
-      "themes": [
-        "fed",
-        "ecb",
-        "curve",
-        "basis",
-        "fx"
-      ]
-    },
-    {
-      "timestamp": "2026-06-12 12:51",
-      "question": "[Daily briefing generated: 2026-06-12]",
-      "answer": "# Macro Briefing \u2014 2026-06-12\n_Generated 08:47 AM ET on Friday, June 12, 2026_\n\n## Market Summary\n\nUSD regime not yet classified \u2014 insufficient data.\n\nNo strong FX divergence signal from regime model.\n\nNo strong basis signal.\n\n## Central Bank Watch\n\n**Fed:**\n- No specific Fed news in today's data \u2014 check Bloomberg.\n\n**ECB:**\nThe ECB is in the early stages of easing. Front-end should lead the rally as near-term cuts get priced. The key risk is a shallow cycle \u2014 if cuts disappoint, belly cheapens ",
-      "section": "daily_briefing",
-      "regime": "full_briefing",
-      "themes": [
-        "fed",
-        "ecb",
-        "curve",
-        "basis",
-        "fx"
-      ]
-    },
-    {
-      "timestamp": "2026-06-15 15:38",
-      "question": "[Daily briefing generated: 2026-06-15]",
-      "answer": "# Macro Briefing \u2014 2026-06-15\n_Generated 11:35 AM ET on Monday, June 15, 2026_\n\n## Market Summary\n\nUSD regime not yet classified \u2014 insufficient data.\n\nNo strong FX divergence signal from regime model.\n\nNo strong basis signal.\n\n## Central Bank Watch\n\n**Fed:**\n- No specific Fed news in today's data \u2014 check Bloomberg.\n\n**ECB:**\nThe ECB is in the early stages of easing. Front-end should lead the rally as near-term cuts get priced. The key risk is a shallow cycle \u2014 if cuts disappoint, belly cheapens ",
-      "section": "daily_briefing",
-      "regime": "full_briefing",
-      "themes": [
-        "fed",
-        "ecb",
-        "curve",
-        "basis",
-        "fx"
-      ]
-    },
-    {
-      "timestamp": "2026-06-16 14:54",
-      "question": "[Daily briefing generated: 2026-06-16]",
-      "answer": "# Macro Briefing \u2014 2026-06-16\n_Generated 10:50 AM ET on Tuesday, June 16, 2026_\n\n## Market Summary\n\nUSD regime not yet classified \u2014 insufficient data.\n\nNo strong FX divergence signal from regime model.\n\nNo strong basis signal.\n\n**Key levels (FRED):**\n- US CPI YoY: 333.979 % YoY (as of 2026-05-01)\n- US CPI YoY: 333.979 % YoY (as of 2026-05-01)\n\n## Central Bank Watch\n\n**Fed:**\n- No specific Fed news in today's data \u2014 check Bloomberg.\n\n**ECB:**\nThe ECB is in the early stages of easing. Front-end sh",
-      "section": "daily_briefing",
-      "regime": "full_briefing",
-      "themes": [
-        "fed",
-        "ecb",
-        "curve",
-        "basis",
-        "fx"
-      ]
-    },
-    {
-      "timestamp": "2026-06-17 13:36",
+      "timestamp": "2026-06-17 19:46",
       "question": "[Daily briefing generated: 2026-06-17]",
-      "answer": "# Macro Briefing \u2014 2026-06-17\n_Generated 09:35 AM ET on Wednesday, June 17, 2026_\n\n## Market Summary\n\nUSD regime not yet classified \u2014 insufficient data. - Fed Funds Effective Rate: 3.63 % annualised (as of 2026-05-01) - US Unemployment Rate: 4.3 % (as of 2026-05-01) - US 10Y Treasury Yield: 4.47 % yield (as of 2026-06-15)\n\nNo strong FX divergence signal from regime model.\n\nNo strong basis signal. - 10Y-2Y Spread: 0.38 bp (\u00d7100) (as of 2026-06-16) - SOFR: 3.63 % annualised (as of 2026-06-16)\n\n**K",
+      "answer": "# Macro Briefing \u2014 2026-06-17\n_Generated 07:45 PM ET on Wednesday, June 17, 2026_\n\n## Market Summary\n_LLM-augmented: false_\n\nThe Fed is in HAWKISH_TIGHTENING \u2014 front-end anchored, long-end driven by term premium and supply. With RESTRICTIVE_HOLD as the most probable next state (20%), the curve should remain flat to inverted while rates stay restrictive. Fed Funds Effective Rate: 3.63 % annualised (as of 2026-05-01) US Unemployment Rate: 4.30% (as of 2026-05-01) US 10Y Treasury Yield: 4.43 % yiel",
+      "section": "daily_briefing",
+      "regime": "full_briefing",
+      "themes": [
+        "fed",
+        "ecb",
+        "curve",
+        "basis",
+        "fx"
+      ]
+    },
+    {
+      "timestamp": "2026-06-17 19:47",
+      "question": "[Daily briefing generated: 2026-06-17]",
+      "answer": "# Macro Briefing \u2014 2026-06-17\n_Generated 07:47 PM ET on Wednesday, June 17, 2026_\n\n## Market Summary\n_LLM-augmented: false_\n\nThe Fed is in HAWKISH_TIGHTENING \u2014 front-end anchored, long-end driven by term premium and supply. With RESTRICTIVE_HOLD as the most probable next state (19%), the curve should remain flat to inverted while rates stay restrictive. Fed Funds Effective Rate: 3.63 % annualised (as of 2026-05-01) US Unemployment Rate: 4.30% (as of 2026-05-01) US 10Y Treasury Yield: 4.43 % yiel",
+      "section": "daily_briefing",
+      "regime": "full_briefing",
+      "themes": [
+        "fed",
+        "ecb",
+        "curve",
+        "basis",
+        "fx"
+      ]
+    },
+    {
+      "timestamp": "2026-06-17 20:08",
+      "question": "[Daily briefing generated: 2026-06-17]",
+      "answer": "# Macro Briefing \u2014 2026-06-17\n_Generated 08:06 PM ET on Wednesday, June 17, 2026_\n\n## Market Summary\n_LLM-augmented: false_\n\nThe Fed is in HAWKISH_TIGHTENING \u2014 front-end anchored, long-end driven by term premium and supply. With RESTRICTIVE_HOLD as the most probable next state (19%), the curve should remain flat to inverted while rates stay restrictive. 10y yield at 4.43 % yield; 2s10s at +29 bp. Front-end is anchored by Fed guidance; back-end takes its cue from supply, term premium and growth-d",
+      "section": "daily_briefing",
+      "regime": "full_briefing",
+      "themes": [
+        "fed",
+        "ecb",
+        "curve",
+        "basis",
+        "fx"
+      ]
+    },
+    {
+      "timestamp": "2026-06-17 20:08",
+      "question": "[Daily briefing generated: 2026-06-17]",
+      "answer": "# Macro Briefing \u2014 2026-06-17\n_Generated 08:08 PM ET on Wednesday, June 17, 2026_\n\n## Market Summary\n_LLM-augmented: false_\n\nThe Fed is in HAWKISH_TIGHTENING \u2014 front-end anchored, long-end driven by term premium and supply. With RESTRICTIVE_HOLD as the most probable next state (19%), the curve should remain flat to inverted while rates stay restrictive. 10y yield at 4.43 % yield; 2s10s at +29 bp. Front-end is anchored by Fed guidance; back-end takes its cue from supply, term premium and growth-d",
+      "section": "daily_briefing",
+      "regime": "full_briefing",
+      "themes": [
+        "fed",
+        "ecb",
+        "curve",
+        "basis",
+        "fx"
+      ]
+    },
+    {
+      "timestamp": "2026-06-17 20:10",
+      "question": "[Daily briefing generated: 2026-06-17]",
+      "answer": "# Macro Briefing \u2014 2026-06-17\n_Generated 08:09 PM ET on Wednesday, June 17, 2026_\n\n## Market Summary\n_LLM-augmented: false_\n\nThe Fed is in HAWKISH_TIGHTENING \u2014 front-end anchored, long-end driven by term premium and supply. With RESTRICTIVE_HOLD as the most probable next state (18%), the curve should remain flat to inverted while rates stay restrictive. 10y yield at 4.43 % yield; 2s10s at +29 bp. Front-end is anchored by Fed guidance; back-end takes its cue from supply, term premium and growth-d",
+      "section": "daily_briefing",
+      "regime": "full_briefing",
+      "themes": [
+        "fed",
+        "ecb",
+        "curve",
+        "basis",
+        "fx"
+      ]
+    },
+    {
+      "timestamp": "2026-06-17 20:14",
+      "question": "[Daily briefing generated: 2026-06-17]",
+      "answer": "# Macro Briefing \u2014 2026-06-17\n_Generated 08:12 PM ET on Wednesday, June 17, 2026_\n\n## Market Summary\n_LLM-augmented: false_\n\nThe Fed is in HAWKISH_TIGHTENING \u2014 front-end anchored, long-end driven by term premium and supply. With RESTRICTIVE_HOLD as the most probable next state (18%), the curve should remain flat to inverted while rates stay restrictive. 10y yield at 4.43 % yield; 2s10s at +29 bp. Front-end is anchored by Fed guidance; back-end takes its cue from supply, term premium and growth-d",
       "section": "daily_briefing",
       "regime": "full_briefing",
       "themes": [
@@ -610,6 +162,56 @@
   "regime_system": {
     "regions": {
       "USD": {
+        "belief": [
+          0.6982803875,
+          0.075429903125,
+          0.075429903125,
+          0.075429903125,
+          0.075429903125
+        ],
+        "counts": [
+          [
+            20.5,
+            5.0,
+            1.25,
+            0.5,
+            0.75
+          ],
+          [
+            0.75,
+            17.5,
+            5.0,
+            1.25,
+            0.5
+          ],
+          [
+            0.5,
+            0.75,
+            17.5,
+            5.0,
+            1.25
+          ],
+          [
+            1.25,
+            0.5,
+            0.75,
+            17.5,
+            5.0
+          ],
+          [
+            5.0,
+            1.25,
+            0.5,
+            0.75,
+            17.5
+          ]
+        ],
+        "current_state": 0,
+        "confidence": 0.6982803875,
+        "last_updated": "2026-06-17 20:14",
+        "observation_count": 6
+      },
+      "EUR": {
         "belief": [
           0.2,
           0.2,
@@ -659,63 +261,13 @@
         "last_updated": null,
         "observation_count": 0
       },
-      "EUR": {
-        "belief": [
-          0.20347142095011228,
-          0.19105222019577922,
-          0.2084589521221821,
-          0.19850870336596318,
-          0.19850870336596318
-        ],
-        "counts": [
-          [
-            17.5,
-            5.0,
-            1.25,
-            0.5,
-            0.75
-          ],
-          [
-            0.75,
-            17.5,
-            5.0,
-            1.25,
-            0.5
-          ],
-          [
-            0.5,
-            0.75,
-            17.5,
-            5.0,
-            1.25
-          ],
-          [
-            1.25,
-            0.5,
-            0.75,
-            17.5,
-            5.0
-          ],
-          [
-            5.0,
-            1.25,
-            0.5,
-            0.75,
-            17.5
-          ]
-        ],
-        "current_state": 2,
-        "confidence": 0.2084589521221821,
-        "last_updated": null,
-        "observation_count": 0
-      },
       "GBP": {
         "belief": [
-          0.06754343269999999,
-          0.7106077692000001,
-          0.17028293269999997,
-          0.025782932699999997,
-          0.025782932699999997
+          0.2,
+          0.2,
+          0.2,
+          0.2,
+          0.2
         ],
         "counts": [
           [
@@ -726,9 +278,9 @@
             0.75
           ],
           [
-            1.0833333333333333,
-            22.5,
-            5.666666666666667,
+            0.75,
+            17.5,
+            5.0,
             1.25,
             0.5
           ],
@@ -754,10 +306,10 @@
             17.5
           ]
         ],
-        "current_state": 1,
-        "confidence": 0.7106077692000001,
-        "last_updated": "2026-05-15 11:46",
-        "observation_count": 9
+        "current_state": null,
+        "confidence": 0.0,
+        "last_updated": null,
+        "observation_count": 0
       },
       "JPY": {
         "belief": [
@@ -1111,6 +663,6 @@
       }
     },
     "version": 2,
-    "last_saved": "2026-06-17 13:36"
+    "last_saved": "2026-06-17 20:14"
   }
 }

@@ -61,9 +61,11 @@ _TRADE_HEADER_RE = re.compile(r"(?m)^###\s+Trade\s+")
 
 
 def _check_trade_count(markdown: str) -> list[str]:
+    # Correctness overhaul: floor lowered from 3 to 1. We would rather print
+    # zero trades than print a fabricated one.
     n = len(_TRADE_HEADER_RE.findall(markdown))
-    if n < 3:
-        return [f"TRADE COUNT: found {n} `### Trade ` headers, need >= 3"]
+    if n < 1:
+        return [f"TRADE COUNT: found {n} `### Trade ` headers, need >= 1"]
     return []
 
 

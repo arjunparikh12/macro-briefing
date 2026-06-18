@@ -33,12 +33,15 @@ from pathlib import Path
 
 import briefing as briefing_module
 import briefing_validator
+import correctness_validator
+from provenance import get_registry
 
-REPO_ROOT     = Path(__file__).parent
-DOCS_DATA_DIR = REPO_ROOT / "docs" / "data"
-BRIEFINGS_DIR = DOCS_DATA_DIR / "briefings"
-INDEX_FILE    = DOCS_DATA_DIR / "index.json"
-LEGACY_DIR    = REPO_ROOT / "data" / "briefings"
+REPO_ROOT      = Path(__file__).parent
+DOCS_DATA_DIR  = REPO_ROOT / "docs" / "data"
+BRIEFINGS_DIR  = DOCS_DATA_DIR / "briefings"
+PROVENANCE_DIR = DOCS_DATA_DIR / "provenance"
+INDEX_FILE     = DOCS_DATA_DIR / "index.json"
+LEGACY_DIR     = REPO_ROOT / "data" / "briefings"
 
 SCHEMA_VERSION = 1
 
@@ -184,6 +187,25 @@ def main() -> int:
         print("[generate] Refusing to write briefing JSON. Fix violations and re-run.")
         return 2
     print(f"[validator] OK ({len(markdown)} chars, no banned phrases / unit bugs)")
+
+    # ── Emit provenance log + correctness re-fetch gate ───────────────────
+    PROVENANCE_DIR.mkdir(parents=True, exist_ok=True)
+    provenance_path = PROVENANCE_DIR / f"{today}.json"
+    registry = get_registry()
+    registry.emit_provenance(provenance_path)
+    print(f"[provenance] Wrote {provenance_path.relative_to(REPO_ROOT)} "
+          f"({len(registry.keys())} facts, {len(registry.missing_keys())} missing)")
+
+    cv_ok, cv_results = correctness_validator.verify_provenance(provenance_path)
+    if not cv_ok:
+        failed = [r for r in cv_results if not r.get("ok")]
+        print(f"[correctness] FAILED — {len(failed)} fact(s) drifted beyond tolerance:")
+        for r in failed[:20]:
+            print(f"  - {r.get('key')}: expected={r.get('expected')} actual={r.get('actual')} "
+                  f"({r.get('message')})")
+        print("[generate] Refusing to write briefing JSON. Investigate live data.")
+        return 3
+    print(f"[correctness] OK — {len(cv_results)} fact(s) re-verified against source URLs")
 
     doc = build_briefing_doc(today, markdown)
 

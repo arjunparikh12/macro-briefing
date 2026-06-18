@@ -25,6 +25,7 @@ from macro_briefing_constants import (
     MAX_AGE_DAYS_DAILY,
     MAX_AGE_DAYS_MONTHLY,
 )
+from provenance import get_registry, make_fact
 
 # ── Request config ────────────────────────────────────────────────────────────
 _HEADERS = {
@@ -129,8 +130,14 @@ FRED_SERIES = [
     ("10Y-2Y Spread",                   "T10Y2Y",     "bp",           "daily",   ""),
     ("SOFR",                            "SOFR",       "% annualised", "daily",   ""),
     # R2.7 — ON RRP balance + IORB for the SOFR Futures money-market block
+    # NOTE: RRPONTSYD is published by FRED in billions of dollars already
+    # (units = "Billions of US Dollars"); we no longer divide by 1000.
     ("ON RRP Take-up",                  "RRPONTSYD",  "$bn",          "daily",   ""),
     ("IORB",                            "IORB",       "% annualised", "daily",   ""),
+    # Fed target range (correctness overhaul — replaces the fabricated
+    # "4.25-4.50%" anchor in house_view_cb.yaml).
+    ("Fed Target Range Upper",          "DFEDTARU",   "% annualised", "daily",   ""),
+    ("Fed Target Range Lower",          "DFEDTARL",   "% annualised", "daily",   ""),
     # FRED proxy strip for the front-end OIS-implied path (R2.7)
     ("1M Treasury Yield",               "DGS1MO",     "% yield",      "daily",   ""),
     ("3M Treasury Yield",               "DGS3MO",     "% yield",      "daily",   ""),
@@ -272,8 +279,9 @@ def _format_value(series_id: str, raw_value: float, unit: str) -> str:
         # FRED returns curve spreads in % — multiply by 100 to render bp.
         return f"{raw_value * 100:+.0f} bp"
     if unit == "$bn":
-        # FRED ON RRP returns in millions; convert and format as $bn
-        return f"${raw_value / 1000:,.0f}bn"
+        # RRPONTSYD is already published in $bn — no division. Earlier code
+        # divided by 1000 and printed $0bn for true values like 6.83bn.
+        return f"${raw_value:,.2f}bn"
     if unit.startswith("% "):
         return f"{raw_value:.2f} {unit}"
     if unit.startswith("%"):
@@ -288,10 +296,33 @@ def _format_value(series_id: str, raw_value: float, unit: str) -> str:
     return f"{raw_value:.4f} {unit}"
 
 
+def _fred_url(series_id: str, transformation: str = "") -> str:
+    """Reconstruct the exact FRED CSV URL we re-fetch in the validator."""
+    vintage = date.today().strftime("%Y-%m-%d")
+    extra = f"&transformation={transformation}" if transformation else ""
+    return _FRED_BASE.format(series=series_id, vintage=vintage, extra=extra)
+
+
+def _last_business_day_on_or_before(d: date) -> date:
+    """Roll a date backward to the most recent business day (Mon-Fri)."""
+    while d.weekday() >= 5:  # 5=Sat, 6=Sun
+        d -= timedelta(days=1)
+    return d
+
+
+# Per-series transformation unit (display + provenance).
+_UNIT_TO_TRANSFORM = {
+    "% YoY": "pc1",
+    "$bn":   "raw",
+    "bp":    "x100",
+}
+
+
 def _fetch_fred_series() -> dict[str, str]:
     """
     Fetch the latest value for every FRED_SERIES entry.
-    Returns {label: "value unit (as of date)"}.
+    Returns {label: "value unit (as of date)"} for backward-compatible
+    consumers (the markdown renderer prefers the registry).
 
     Behaviour:
       - If a `transformation` is set (e.g. "pc1" for CPI YoY), the FRED CSV
@@ -300,8 +331,12 @@ def _fetch_fred_series() -> dict[str, str]:
         from percentage points to basis points before printing.
       - Observations older than the staleness window for the cadence are
         suppressed (not emitted) — per rates spec §A5.
+      - Every pull registers a `NumericFact` keyed `FRED:<SERIES_ID>` in the
+        shared `DataPullRegistry` for provenance + sanity checking.
     """
     results: dict[str, str] = {}
+    registry = get_registry()
+
     # Labels that must be surfaced even when stale (with a STALE tag) — per
     # R2.4: PCE / Core PCE absence was being silently swallowed.
     NEVER_SUPPRESS = {
@@ -312,6 +347,9 @@ def _fetch_fred_series() -> dict[str, str]:
         "US Unemployment Rate",
         "Fed Funds Effective Rate",
     }
+    today = date.today()
+    last_bd = _last_business_day_on_or_before(today)
+
     for entry in FRED_SERIES:
         # Allow legacy 3-tuple too, just in case.
         if len(entry) == 5:
@@ -319,13 +357,27 @@ def _fetch_fred_series() -> dict[str, str]:
         else:
             label, series_id, unit = entry[:3]
             cadence, trans = "daily", ""
+        url = _fred_url(series_id, trans)
         try:
             rows = _fetch_fred_csv_rows(series_id, transformation=trans)
             if not rows:
+                registry.register_missing(f"FRED:{series_id}", url)
                 continue
+            # Walk backward to the latest row whose observation date is on
+            # or before today. FRED publishes IORB / target-rate series one
+            # business day forward; without the clamp the briefing prints
+            # tomorrow's date.
             obs_date, raw_value = rows[-1]
+            for d, v in reversed(rows):
+                try:
+                    if datetime.strptime(d, "%Y-%m-%d").date() <= last_bd:
+                        obs_date, raw_value = d, v
+                        break
+                except ValueError:
+                    continue
             stale = _is_stale(obs_date, cadence)
             if stale and label not in NEVER_SUPPRESS:
+                registry.register_missing(f"FRED:{series_id}", url)
                 continue
             display = _format_value(series_id, raw_value, unit)
             if stale:
@@ -333,7 +385,26 @@ def _fetch_fred_series() -> dict[str, str]:
                 results[label] = f"{display} (STALE, last update {obs_date})"
             else:
                 results[label] = f"{display} (as of {obs_date})"
+
+            # Register the live fact in the provenance registry.
+            transform = "raw"
+            if trans:
+                transform = trans
+            if series_id in FRED_SPREAD_SERIES_PCT_TO_BP and unit.strip() == "bp":
+                transform = "x100_for_bp"
+            registry.register(
+                f"FRED:{series_id}",
+                make_fact(
+                    value=float(raw_value),
+                    units=unit,
+                    source_id=f"FRED:{series_id}",
+                    source_url=url,
+                    observation_date=obs_date,
+                    transformation=transform,
+                ),
+            )
         except Exception:
+            registry.register_missing(f"FRED:{series_id}", url)
             continue
         time.sleep(0.05)
     return results

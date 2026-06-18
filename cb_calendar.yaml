@@ -1,0 +1,33 @@
+# cb_calendar.yaml — User-maintained CB meeting calendar.
+#
+# Source URLs must be verified by hand. The renderer prints
+# `[Next meeting: pending cb_calendar.yaml verification]` if `last_verified`
+# is missing or empty, or if there is no `next` meeting after today's date.
+#
+# Schema per CB:
+#   source:         official-calendar URL
+#   last_verified:  YYYY-MM-DD the maintainer checked the URL
+#   meetings:       chronological list of {date, type} dicts
+#
+# Implementer note (2026-06-17): placeholder entries below — user will
+# populate from the official calendars after the overhaul ships.
+
+Fed:
+  source: "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm"
+  last_verified: ""
+  meetings: []
+
+ECB:
+  source: "https://www.ecb.europa.eu/press/calendars/mgcgc/html/index.en.html"
+  last_verified: ""
+  meetings: []
+
+BOE:
+  source: "https://www.bankofengland.co.uk/monetary-policy/upcoming-mpc-dates"
+  last_verified: ""
+  meetings: []
+
+BOJ:
+  source: "https://www.boj.or.jp/en/mopo/mpmsche_minu/index.htm"
+  last_verified: ""
+  meetings: []

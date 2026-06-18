@@ -2678,6 +2678,7 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
         Returns full briefing as a markdown string.
         """
         from daily_briefing_runner import run_data_pipeline
+        from provenance import reset_registry
         import pytz
         from datetime import datetime as dt
 
@@ -2685,6 +2686,9 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
         now_et = dt.now(et)
         briefing_date = date or now_et.strftime("%Y-%m-%d")
         now_str = now_et.strftime("%I:%M %p ET on %A, %B %d, %Y")
+
+        # Correctness overhaul: fresh registry per run.
+        reset_registry()
 
         if stream_callback:
             stream_callback(f"Starting briefing generation for {briefing_date}...\n")
@@ -2985,6 +2989,7 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
         fred_claims: list[str] = []
         if derived_fred:
             preferred_order = [
+                "Fed Target Range Lower", "Fed Target Range Upper",
                 "Fed Funds Effective Rate", "US CPI YoY", "US Core CPI YoY",
                 "US PCE YoY", "US Core PCE YoY", "US Unemployment Rate",
                 "US 10Y Treasury Yield", "US 2Y Treasury Yield",
@@ -3048,6 +3053,54 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
             self._cb_yaml_cache = {}
         return self._cb_yaml_cache
 
+    def _load_cb_calendar(self) -> dict:
+        """Load `cb_calendar.yaml` once; empty dict on any failure."""
+        cached = getattr(self, "_cb_calendar_cache", None)
+        if cached is not None:
+            return cached
+        try:
+            import yaml
+            from pathlib import Path
+            path = Path(__file__).parent / "cb_calendar.yaml"
+            self._cb_calendar_cache = yaml.safe_load(path.read_text()) or {}
+        except Exception:
+            self._cb_calendar_cache = {}
+        return self._cb_calendar_cache
+
+    def _cb_meeting_lines(self, cb_name: str) -> tuple[str, str]:
+        """Return (last_move_line, next_meeting_line) from cb_calendar.yaml.
+
+        Both default to a `pending verification` token when the calendar is
+        not populated. No fabrication.
+        """
+        from datetime import date as _date, datetime as _dt
+        cal = self._load_cb_calendar()
+        block = cal.get(cb_name) or {}
+        last_verified = (block.get("last_verified") or "").strip()
+        meetings = block.get("meetings") or []
+        pending = "[pending cb_calendar.yaml verification]"
+        if not last_verified or not meetings:
+            return (pending, pending)
+        today = _date.today()
+        past = []
+        future = []
+        for m in meetings:
+            d_raw = m.get("date")
+            try:
+                d = _dt.strptime(str(d_raw), "%Y-%m-%d").date()
+            except Exception:
+                continue
+            (past if d <= today else future).append((d, m))
+        last_line = pending
+        next_line = pending
+        if past:
+            d, m = max(past, key=lambda x: x[0])
+            last_line = f"{d.isoformat()} ({m.get('type','meeting')})"
+        if future:
+            d, m = min(future, key=lambda x: x[0])
+            next_line = f"{d.isoformat()} ({m.get('type','meeting')})"
+        return (last_line, next_line)
+
     def _briefing_central_bank_watch(self, summaries: str) -> str:
         """## Central Bank Watch — Fed, ECB, BOE, BOJ with analytical framing."""
         from regime_model import STATES
@@ -3103,18 +3156,47 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
 
             lines.append(f"\n**{cb_name}:**")
 
-            # R2.6 — emit the house-view CB anchor lines FIRST so every block
-            # has policy rate / last move / next meeting / terminal anchor /
-            # regime read, regardless of whether the regime model has fired.
+            # Correctness overhaul: every previously-hardcoded numeric anchor
+            # is now either (a) a live registry pull, (b) derived from the
+            # cb_calendar.yaml meeting list, or (c) dropped entirely as
+            # un-sourceable. `cb_block` keeps the analyst-view one-liner only.
             cb_block = cb_yaml.get(cb_name) or {}
-            if cb_block:
-                lines.append(f"- Policy rate: {cb_block.get('policy_rate','n/a')}")
-                lines.append(f"- Last move: {cb_block.get('last_move','n/a')}")
-                lines.append(f"- Next meeting: {cb_block.get('next_meeting','n/a')}")
+            registry = self._get_registry()
+            if cb_name == "Fed":
+                upper = registry.get("FRED:DFEDTARU")
+                lower = registry.get("FRED:DFEDTARL")
+                if upper and lower:
+                    # Render each leg through the registry then drop the
+                    # repeated unit suffix for compactness (no fabrication —
+                    # values still trace 1:1 to FRED).
+                    lo_disp = registry.render_or_unavailable("FRED:DFEDTARL", ".2f")
+                    up_disp = registry.render_or_unavailable("FRED:DFEDTARU", ".2f")
+                    # Trim ` annualised` suffix from the lower-bound display
+                    # so the range reads `3.50% - 3.75% annualised`.
+                    suffix = " annualised"
+                    if lo_disp.endswith(suffix):
+                        lo_disp = lo_disp[: -len(suffix)]
+                    lines.append(
+                        f"- Policy rate: {lo_disp} - {up_disp} target range "
+                        f"(FRED DFEDTARL/U, as of {upper.observation_date})"
+                    )
+                else:
+                    lines.append(
+                        "- Policy rate: "
+                        + registry.render_or_unavailable("FRED:DFEDTARU", ".2f")
+                    )
+            else:
+                # No live policy-rate FRED series for ECB / BOE / BOJ in our
+                # current pipeline — print UNAVAILABLE rather than fabricate.
                 lines.append(
-                    f"- Terminal anchor: {cb_block.get('terminal_anchor','n/a')}"
+                    f"- Policy rate: [UNAVAILABLE — requires {cb_name} stats endpoint]"
                 )
-                lines.append(f"- Regime read: {cb_block.get('regime_read','n/a')}")
+
+            last_meeting, next_meeting = self._cb_meeting_lines(cb_name)
+            lines.append(f"- Last meeting: {last_meeting}")
+            lines.append(f"- Next meeting: {next_meeting}")
+            if cb_block.get("regime_read"):
+                lines.append(f"- _Analyst view:_ {cb_block.get('regime_read')}")
 
             # Analytical narrative from regime model
             r = self.regime_model.regions.get(region, {})
@@ -3266,6 +3348,11 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
             return get_last_derived() or {}
         except Exception:
             return {}
+
+    def _get_registry(self):
+        """Return the shared DataPullRegistry for this run."""
+        from provenance import get_registry
+        return get_registry()
 
     # ── Curve helpers used by _briefing_rates_market ─────────────────────
     _CURVE_TENORS = [
@@ -4166,7 +4253,9 @@ Structural levers: CB balance sheets, Fed SRP, FX hedging demand, SLR reform, Ya
                     })
 
         # House-view first, dynamic (if enabled) after.
-        all_trades = pad_with_house_view(dynamic_dicts, floor=3)
+        # Correctness overhaul: every house-view trade computes its
+        # entry/target/stop from the live registry; pass the registry through.
+        all_trades = pad_with_house_view(dynamic_dicts, self._get_registry(), floor=1)
 
         for i, trade in enumerate(all_trades, 1):
             if trade.get("raw_markdown"):

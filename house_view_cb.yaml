@@ -1,36 +1,24 @@
-# house_view_cb.yaml — Central Bank cheat sheet.
+# house_view_cb.yaml — Central Bank analyst regime read ONLY.
 #
-# Maintained by hand until live SDW / IADB / MOF feeds land. Used by
-# `macro_llm._briefing_central_bank_watch` to populate the ECB/BOE/BOJ blocks
-# with at least 4 lines apiece (policy rate, last move, next meeting,
-# terminal-rate anchor view, regime read).
-#
-# Anchor view is desk-grade, NOT a forecast — call out if the market disagrees.
+# Correctness overhaul (2026-06-17): every previously-listed numeric anchor
+# (policy_rate, last_move, next_meeting, terminal_anchor) was a hardcoded
+# fabrication that the briefing rendered as if it were live data. They are
+# all removed. The Central Bank Watch section now derives:
+#   - Policy rate (Fed) from FRED DFEDTARU/DFEDTARL.
+#   - Last move / next meeting from `cb_calendar.yaml` (user-maintained,
+#     with a `last_verified` date the renderer checks for freshness).
+#   - Terminal anchor: not a fact — dropped.
+#   - Regime read: the analyst-view one-liner below, prefixed
+#     `_Analyst view:_` so it is unambiguously prose, not data.
 
 Fed:
-  policy_rate: "4.25-4.50% (target range, lower bound 4.25%)"
-  last_move: "Hold (Mar-26); last cut 25 bp at Dec-25 meeting"
-  next_meeting: "Jul 30, 2026 (FOMC)"
-  terminal_anchor: "3.25-3.50% by end-2026, ~25 bp lower than OIS-implied"
   regime_read: "Restrictive hold with dovish drift; first cut delivered if labour softens through Aug NFP."
 
 ECB:
-  policy_rate: "DFR 2.00% (deposit facility); MRO 2.15%"
-  last_move: "Cut 25 bp to 2.00% at Apr-26; total 175 bp of cuts since Jun-24"
-  next_meeting: "Jul 23, 2026 (Governing Council)"
-  terminal_anchor: "DFR 1.75-2.00% floor — ECB at or near the end of the cycle"
   regime_read: "End-of-cycle hold; balance of risks favours patience while wages cool."
 
 BOE:
-  policy_rate: "Bank Rate 4.00%"
-  last_move: "Cut 25 bp to 4.00% at Mar-26; pace has been one cut per quarter"
-  next_meeting: "Aug 6, 2026 (MPC)"
-  terminal_anchor: "3.25% terminal by Q2-27 — more cuts than OIS prices"
   regime_read: "Gradual easing with services CPI sticky; cuts come in measured 25 bp steps."
 
 BOJ:
-  policy_rate: "Uncollateralised overnight call rate 0.50%"
-  last_move: "Hike 25 bp to 0.50% at Jan-26; JGB taper continues at JPY 200 bn/mo"
-  next_meeting: "Jul 31, 2026 (MPM)"
-  terminal_anchor: "1.00% terminal by end-2027; market underpricing further hikes"
   regime_read: "Cautious normalisation; FX weakness vs USD is the political/inflation pressure point."

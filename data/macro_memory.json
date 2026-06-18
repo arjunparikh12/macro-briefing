@@ -153,6 +153,20 @@
         "basis",
         "fx"
       ]
+    },
+    {
+      "timestamp": "2026-06-17 20:27",
+      "question": "[Daily briefing generated: 2026-06-17]",
+      "answer": "# Macro Briefing \u2014 2026-06-17\n_Generated 08:26 PM ET on Wednesday, June 17, 2026_\n\n## Market Summary\n_LLM-augmented: false_\n\nThe Fed is in HAWKISH_TIGHTENING \u2014 front-end anchored, long-end driven by term premium and supply. With RESTRICTIVE_HOLD as the most probable next state (18%), the curve should remain flat to inverted while rates stay restrictive. 10y yield at 4.43 % yield; 2s10s at +29 bp. Front-end is anchored by Fed guidance; back-end takes its cue from supply, term premium and growth-d",
+      "section": "daily_briefing",
+      "regime": "full_briefing",
+      "themes": [
+        "fed",
+        "ecb",
+        "curve",
+        "basis",
+        "fx"
+      ]
     }
   ],
   "patterns": {},
@@ -163,15 +177,15 @@
     "regions": {
       "USD": {
         "belief": [
-          0.6982803875,
-          0.075429903125,
-          0.075429903125,
-          0.075429903125,
-          0.075429903125
+          0.743538329375,
+          0.06411541765625,
+          0.06411541765625,
+          0.06411541765625,
+          0.06411541765625
         ],
         "counts": [
           [
-            20.5,
+            21.0,
             5.0,
             1.25,
             0.5,
@@ -207,9 +221,9 @@
           ]
         ],
         "current_state": 0,
-        "confidence": 0.6982803875,
-        "last_updated": "2026-06-17 20:14",
-        "observation_count": 6
+        "confidence": 0.743538329375,
+        "last_updated": "2026-06-17 20:27",
+        "observation_count": 7
       },
       "EUR": {
         "belief": [
@@ -663,6 +677,6 @@
       }
     },
     "version": 2,
-    "last_saved": "2026-06-17 20:14"
+    "last_saved": "2026-06-17 20:27"
   }
 }

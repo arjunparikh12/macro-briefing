@@ -237,6 +237,20 @@
         "basis",
         "fx"
       ]
+    },
+    {
+      "timestamp": "2026-06-22 15:12",
+      "question": "[Daily briefing generated: 2026-06-22]",
+      "answer": "# Macro Briefing \u2014 2026-06-22\n_Generated 11:11 AM ET on Monday, June 22, 2026_\n\n## Market Summary\n_LLM-augmented: false_\n\nThe Fed is in HAWKISH_TIGHTENING \u2014 front-end anchored, long-end driven by term premium and supply. With RESTRICTIVE_HOLD as the most probable next state (17%), the curve should remain flat to inverted while rates stay restrictive. 10y yield at 4.49 % yield; 2s10s at +27 bp. Front-end is anchored by Fed guidance; back-end takes its cue from supply, term premium and growth-data",
+      "section": "daily_briefing",
+      "regime": "full_briefing",
+      "themes": [
+        "fed",
+        "ecb",
+        "curve",
+        "basis",
+        "fx"
+      ]
     }
   ],
   "patterns": {},
@@ -297,15 +311,15 @@
       },
       "EUR": {
         "belief": [
-          0.2,
-          0.2,
-          0.2,
-          0.2,
-          0.2
+          0.3238154613466334,
+          0.1674563591022444,
+          0.16957605985037408,
+          0.16957605985037408,
+          0.16957605985037408
         ],
         "counts": [
           [
-            17.5,
+            18.0,
             5.0,
             1.25,
             0.5,
@@ -340,18 +354,18 @@
             17.5
           ]
         ],
-        "current_state": null,
-        "confidence": 0.0,
-        "last_updated": null,
-        "observation_count": 0
+        "current_state": 0,
+        "confidence": 0.3238154613466334,
+        "last_updated": "2026-06-22 15:12",
+        "observation_count": 1
       },
       "GBP": {
         "belief": [
-          0.15725000000000003,
-          0.371,
-          0.15725000000000003,
-          0.15725000000000003,
-          0.15725000000000003
+          0.16947937500000002,
+          0.4495825,
+          0.126979375,
+          0.126979375,
+          0.126979375
         ],
         "counts": [
           [
@@ -362,8 +376,8 @@
             0.75
           ],
           [
-            0.75,
-            18.25,
+            0.9166666666666666,
+            18.75,
             5.0,
             1.25,
             0.5
@@ -391,9 +405,9 @@
           ]
         ],
         "current_state": 1,
-        "confidence": 0.371,
-        "last_updated": "2026-06-19 13:26",
-        "observation_count": 2
+        "confidence": 0.4495825,
+        "last_updated": "2026-06-22 15:12",
+        "observation_count": 4
       },
       "JPY": {
         "belief": [
@@ -747,6 +761,6 @@
       }
     },
     "version": 2,
-    "last_saved": "2026-06-19 13:26"
+    "last_saved": "2026-06-22 15:12"
   }
 }

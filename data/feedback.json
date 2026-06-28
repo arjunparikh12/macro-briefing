@@ -21,5 +21,14 @@
       "user_id": "anon-soh8e9y7",
       "ts": "2026-06-18T11:31:24.471Z"
     }
+  ],
+  "2026-06-26": [
+    {
+      "rating": null,
+      "note": "you said it supports USD strength in GBP/USD and then said SONIA/SOFR is neutral... The confidence percentage should factor into your view and you should always try to take a view",
+      "section": "Market Summary",
+      "user_id": "anon-agbezmeg",
+      "ts": "2026-06-28T23:47:17.109Z"
+    }
   ]
 }
